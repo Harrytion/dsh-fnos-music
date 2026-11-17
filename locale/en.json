@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Feiniu Music",
+    "description": "Adds a Feiniu Music sidebar entry and rebuilds the main panel as an original fnOS-music-web-style app: top search, left navigation, content area, right now-playing/queue aside, bottom player bar, with Home/Songs/Albums/Artists/Playlists/Folders/Favorites/detail/Search/Now Playing. V3 local features include listening history and stats, listener profiles with isolated history/recommendations, local time/scene BGM, continuous local AI DJ, optional browser voice commands (off by default), Agent read-only mode plus audit, relay/LAN traffic counters, and paginated/content-visibility large-library handling; 16 agent tools. Connects over FNID relay, LAN, Unix socket, or auto; credentials stay in the current DSH profile and never reach the browser. Audio is your own NAS stream relayed same-origin with Range seeking and without caching, transcoding, or external sharing. No online source is bundled or provided; the optional online-source sub-plugin is not part of this delivery. fnOS exposes no player-state API, so the official app and DSH do not share live playback state."
+  }
+}

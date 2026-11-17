@@ -1,0 +1,6 @@
+# dsh-fnos-music: one Loader row. The Client half owns the three DSH surfaces —
+# the sidebar entry (sidebar.panellist), the resident now-playing row above
+# Settings (sidebar.footer.action), and the tabbed control panel (main).
+- insert:
+    - id: fnos-music
+      name: dsh-fnos-music
