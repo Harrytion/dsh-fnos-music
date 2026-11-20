@@ -632,7 +632,7 @@ export class MusicBridge {
     }
     const artist = str(params.artist);
     if (artist !== '') {
-      const result = await this.library.search({ kind: 'track', artist, limit: Math.min(limit, 50) });
+      const result = await this.library.artistTracksByName(artist, limit);
       if (result.ok !== true) return result;
       const items = result.data.items as TrackRef[];
       if (items.length === 0) return fail('not_found', `No track matched artist "${artist}"`);
@@ -1249,7 +1249,7 @@ export class MusicBridge {
   async artist(params: Record<string, unknown>): Promise<ToolResult> {
     const name = str(params.name) || str(params.artist);
     if (name === '') return { ok: false, error: makeError('bad_request', 'artist name is required') };
-    const tracks = await this.library.search({ kind: 'track', artist: name, limit: 50 });
+    const tracks = await this.library.artistTracksByName(name, 50);
     if (tracks.ok !== true) return tracks;
     const albums = await this.library.search({ kind: 'album', query: name, limit: 20 });
     return {
@@ -1258,7 +1258,7 @@ export class MusicBridge {
       tracks: tracks.data.items,
       albums: albums.ok === true ? albums.data.items : [],
       total: tracks.data.total,
-      truncated: tracks.data.truncated === true || tracks.data.hasMore === true,
+      truncated: tracks.data.hasMore === true,
     };
   }
 

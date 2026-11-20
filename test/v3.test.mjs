@@ -11,6 +11,8 @@ import { TrafficService } from '../lib/state/traffic.js';
 import { AuditService } from '../lib/state/audit.js';
 import { parseVoiceIntent } from '../lib/fnos/voice.js';
 import { Vault } from '../lib/state/vault.js';
+import { LibraryService } from '../lib/state/library.js';
+import { FnosApi } from '../lib/fnos/api.js';
 
 
 function memoryCredentials() {
@@ -440,4 +442,71 @@ test('old history rows without albumId still resolve from the latest snapshot', 
   assert.equal(snap.coverId, '');
   assert.equal(snap.durationSec, 120);
   await history.dispose();
+});
+
+test('library uses exact native album track endpoint when album detail has no tracks', async () => {
+  const album = { id: 'album-x', title: 'Album X', artist: 'Artist X', year: 2024, coverId: 'cover-x', trackCount: 2 };
+  const items = [track('ax1', { albumId: 'album-x', album: 'Album X' }), track('ax2', { albumId: 'album-x', album: 'Album X' })];
+  const api = {
+    async albumDetail() { return { ok: true, data: { album, tracks: [] } }; },
+    async albumTrackList(_id, page) { return { ok: true, data: { total: 2, items: page === 1 ? items : [] } }; },
+  };
+  const library = new LibraryService({ api: () => api, limiter: { run: (task) => task() } });
+  const result = await library.albumDetail('album-x');
+  assert.equal(result.ok, true);
+  assert.equal(result.data.tracks.length, 2);
+  assert.deepEqual(result.data.tracks.map((item) => item.id), ['ax1', 'ax2']);
+  const play = await library.albumTracks('album-x');
+  assert.equal(play.ok, true);
+  assert.equal(play.data.total, 2);
+});
+
+test('library resolves artist GUID before using the native artist track endpoint', async () => {
+  const items = [track('ar1', { artist: 'Artist Y' }), track('ar2', { artist: 'Artist Y' })];
+  const api = {
+    async search(kind) {
+      assert.equal(kind, 'artist');
+      return { ok: true, data: { kind: 'artist', total: 1, items: [{ id: 'artist-y', name: 'Artist Y', coverId: '', albumCount: 1, trackCount: 2 }] } };
+    },
+    async artistTrackList(guid) {
+      assert.equal(guid, 'artist-y');
+      return { ok: true, data: { total: 2, items } };
+    },
+  };
+  const library = new LibraryService({ api: () => api, limiter: { run: (task) => task() } });
+  const result = await library.artistTracksByName('Artist Y', 50);
+  assert.equal(result.ok, true);
+  assert.equal(result.data.total, 2);
+  assert.deepEqual(result.data.items.map((item) => item.id), ['ar1', 'ar2']);
+  assert.equal(result.data.hasMore, false);
+});
+
+test('FnosApi targets the exact album and artist track-list endpoints', async () => {
+  const calls = [];
+  const rawTrack = {
+    guid: 'track-x',
+    title: 'Track X',
+    artists: [{ name: 'Artist X' }],
+    album: { guid: 'album-x', name: 'Album X', coverId: 'cover-x' },
+    duration: 1000,
+  };
+  const transport = {
+    async request(path, options) {
+      calls.push({ path, query: options.query });
+      return { ok: true, data: { total: 1, list: [rawTrack] } };
+    },
+  };
+  const api = new FnosApi(transport);
+  const album = await api.albumTrackList('album-x', 2, 200);
+  assert.equal(album.ok, true);
+  assert.equal(album.data.total, 1);
+  assert.equal(album.data.items[0].id, 'track-x');
+  const artist = await api.artistTrackList('artist-x', 1, 50);
+  assert.equal(artist.ok, true);
+  assert.equal(artist.data.items[0].title, 'Track X');
+  assert.deepEqual(calls.map((call) => call.path), ['/track/album-detail/list', '/track/artist-detail/list']);
+  assert.equal(calls[0].query.albumGUID, 'album-x');
+  assert.equal(calls[0].query.page, 2);
+  assert.equal(calls[0].query.size, 200);
+  assert.equal(calls[1].query.artistGUID, 'artist-x');
 });

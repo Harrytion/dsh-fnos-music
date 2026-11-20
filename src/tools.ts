@@ -250,7 +250,7 @@ export function createTools(bridge: MusicBridge): HostToolDefinition[] {
           trackId: { type: 'string', description: 'Track id from search or the current queue.' },
           query: { type: 'string', description: 'Natural-language track query, e.g. "周杰伦 晴天". Matching tracks are queued (bounded by limit).' },
           playlistId: { type: 'string', description: 'Play all tracks of a saved playlist (bounded by limit).' },
-          albumId: { type: 'string', description: 'Play all tracks of an album. If the firmware album-detail response has no tracks, the plugin falls back to a bounded album-title search.' },
+          albumId: { type: 'string', description: 'Play all tracks of an album. Uses the native album track-list endpoint when the firmware album-detail response has no tracks, with a bounded title-search fallback.' },
           mode: { type: 'string', enum: ['replace', 'append', 'next'], description: 'replace the queue (default), append to it, or insert after the current track.' },
           shuffle: { type: 'boolean', description: 'Use shuffle order for this playback.' },
           limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum tracks to add from a query/playlist/album. Default 50.' },

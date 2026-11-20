@@ -98,8 +98,19 @@ export class FnosApi {
     size: number,
     normalize: (value: unknown) => T,
   ): Promise<Result<Page<T>>> {
+    return this.pageWith(path, page, size, normalize);
+  }
+
+  /** Paged endpoint with a fixed id query (albumGUID, artistGUID, ...). */
+  private async pageWith<T>(
+    path: string,
+    page: number,
+    size: number,
+    normalize: (value: unknown) => T,
+    query: Record<string, string> = {},
+  ): Promise<Result<Page<T>>> {
     const result = await this.transport.request<unknown>(path, {
-      query: { page, size },
+      query: { ...query, page, size },
     });
     if (result.ok !== true) return result;
     const items = listOf(result.data)
@@ -117,6 +128,16 @@ export class FnosApi {
 
   listTracks(page: number, size: number): Promise<Result<Page<TrackRef>>> {
     return this.page('/track/list', page, size, normalizeTrack);
+  }
+
+  /** Exact album track list used by firmware whose /album/detail has no tracks. */
+  albumTrackList(albumGUID: string, page: number, size: number): Promise<Result<Page<TrackRef>>> {
+    return this.pageWith('/track/album-detail/list', page, size, normalizeTrack, { albumGUID });
+  }
+
+  /** Exact artist track list used instead of the bounded full-library scan. */
+  artistTrackList(artistGUID: string, page: number, size: number): Promise<Result<Page<TrackRef>>> {
+    return this.pageWith('/track/artist-detail/list', page, size, normalizeTrack, { artistGUID });
   }
 
   listAlbums(page: number, size: number): Promise<Result<Page<AlbumRef>>> {

@@ -24,6 +24,10 @@ const SUMMARY_TTL_MS = 5 * 60_000;
 const LYRICS_TTL_MS = 10 * 60_000;
 const MAX_SCAN_PAGES = 10;
 const MAX_PLAYLIST_TRACKS = 2000;
+const NATIVE_TRACK_PAGE_SIZE = 200;
+const MAX_NATIVE_TRACK_PAGES = 5;
+const MAX_NATIVE_TRACKS = 1000;
+const MAX_ARTIST_TRACKS = 200;
 
 export type SearchKindInput = 'track' | 'artist' | 'album' | 'playlist' | 'folder';
 
@@ -439,14 +443,50 @@ export class LibraryService {
     this.playlistCache.delete(id);
   }
 
+  private async nativeAlbumTracks(
+    albumId: string,
+    signal?: AbortSignal,
+  ): Promise<Result<{ items: TrackRef[]; total: number; truncated: boolean }>> {
+    const items: TrackRef[] = [];
+    const seen = new Set<string>();
+    let total = 0;
+    let truncated = false;
+    for (let page = 1; page <= MAX_NATIVE_TRACK_PAGES; page += 1) {
+      const result = await this.run((api) => api.albumTrackList(albumId, page, NATIVE_TRACK_PAGE_SIZE), signal);
+      if (result.ok !== true) {
+        if (items.length > 0) break;
+        return result;
+      }
+      total = Math.max(total, result.data.total);
+      for (const track of result.data.items) {
+        if (seen.has(track.id)) continue;
+        seen.add(track.id);
+        items.push(track);
+      }
+      if (items.length >= MAX_NATIVE_TRACKS || items.length >= total || result.data.items.length === 0) break;
+      if (page === MAX_NATIVE_TRACK_PAGES && items.length < total) truncated = true;
+    }
+    return {
+      ok: true,
+      data: {
+        items: items.slice(0, MAX_NATIVE_TRACKS).map((track) => this.remember(track)),
+        total: Math.max(total, items.length),
+        truncated: truncated || items.length > MAX_NATIVE_TRACKS,
+      },
+    };
+  }
+
   async albumDetail(id: string, signal?: AbortSignal): Promise<Result<AlbumDetail>> {
     const result = await this.run((api) => api.albumDetail(id), signal);
     if (result.ok !== true) return result;
     let tracks = result.data.tracks;
-    // Some fnOS firmware versions return album metadata without tracks. Fall
-    // back to the server-side album-title search so the detail view and
-    // "play album" still work; this is bounded and never a full-library scan.
-    if (tracks.length === 0 && result.data.album !== undefined && result.data.album.title.trim() !== '') {
+    // The official album track endpoint is authoritative on firmware whose
+    // /album/detail omits tracks. Fall back to embedded tracks, then to the
+    // bounded title search only for older servers.
+    const native = await this.nativeAlbumTracks(id, signal);
+    if (native.ok === true && native.data.items.length > 0) {
+      tracks = native.data.items;
+    } else if (tracks.length === 0 && result.data.album !== undefined && result.data.album.title.trim() !== '') {
       const fallback = await this.search({ kind: 'track', album: result.data.album.title, limit: 100 });
       if (fallback.ok === true) tracks = fallback.data.items as TrackRef[];
     }
@@ -457,6 +497,46 @@ export class LibraryService {
         tracks: tracks.map((track) => this.remember(track)),
       },
     };
+  }
+
+  /** Artist tracks by exact artist name, resolved to an artist GUID first. */
+  async artistTracksByName(
+    nameValue: string,
+    limit = 50,
+    signal?: AbortSignal,
+  ): Promise<Result<LibrarySearchResult>> {
+    const name = nameValue.trim();
+    const wanted = clamp(limit, 1, MAX_ARTIST_TRACKS);
+    if (name === '') {
+      return {
+        ok: true,
+        data: { kind: 'track', total: 0, items: [], offset: 0, limit: wanted, hasMore: false },
+      };
+    }
+    const artistSearch = await this.search({ kind: 'artist', query: name, limit: 20, signal });
+    if (artistSearch.ok === true) {
+      const artists = artistSearch.data.items as ArtistRef[];
+      const exact = artists.find((artist) => artist.name.toLowerCase() === name.toLowerCase());
+      if (exact !== undefined) {
+        const native = await this.run((api) => api.artistTrackList(exact.id, 1, wanted), signal);
+        if (native.ok === true && native.data.items.length > 0) {
+          const items = native.data.items.slice(0, wanted).map((track) => this.remember(track));
+          return {
+            ok: true,
+            data: {
+              kind: 'track',
+              total: Math.max(native.data.total, items.length),
+              items,
+              offset: 0,
+              limit: wanted,
+              hasMore: native.data.total > items.length,
+            },
+          };
+        }
+      }
+    }
+    // Old firmware/artist-search miss: retain the previous bounded fallback.
+    return this.search({ kind: 'track', artist: name, limit: wanted, signal });
   }
 
   async albumTracks(id: string, signal?: AbortSignal): Promise<Result<{ total: number; items: TrackRef[] }>> {

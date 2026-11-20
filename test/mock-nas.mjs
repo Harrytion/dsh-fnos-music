@@ -239,10 +239,26 @@ export function startMockNas() {
     }
     if (path === `${API}/album/detail`) {
       const guid = url.searchParams.get('guid');
+      // Like current fnOS firmware: metadata only, no tracks. The plugin must
+      // use /track/album-detail/list to populate the album view.
       const album = guid === 'album-2'
-        ? { guid: 'album-2', name: 'Focus', artists: [{ name: 'Ambient' }], coverId: 'cover-2', tracks: [TRACKS[2]] }
-        : { guid: 'album-1', name: '叶惠美', artists: [{ name: '周杰伦' }], coverId: 'cover-1', tracks: TRACKS.slice(0, 2) };
+        ? { guid: 'album-2', name: 'Focus', artists: [{ name: 'Ambient' }], coverId: 'cover-2', trackCount: 1 }
+        : { guid: 'album-1', name: '叶惠美', artists: [{ name: '周杰伦' }], coverId: 'cover-1', trackCount: 2 };
       json(envelope(album));
+      return;
+    }
+    if (path === `${API}/track/album-detail/list`) {
+      const guid = url.searchParams.get('albumGUID');
+      const tracks = TRACKS.filter((track) => track.album?.guid === guid);
+      json(paged(tracks, url));
+      return;
+    }
+    if (path === `${API}/track/artist-detail/list`) {
+      const guid = url.searchParams.get('artistGUID');
+      const names = { 'artist-1': '周杰伦', 'artist-2': 'Ambient' };
+      const name = names[guid] ?? '';
+      const tracks = TRACKS.filter((track) => track.artists.some((artist) => artist.name === name));
+      json(paged(tracks, url));
       return;
     }
     if (path === `${API}/search/track`) {
