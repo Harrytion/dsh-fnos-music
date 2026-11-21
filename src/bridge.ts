@@ -38,6 +38,8 @@ import type {
 import { fail, makeError } from './errors.js';
 import { FnosApi } from './fnos/api.js';
 import { parseLrc } from './fnos/lrc.js';
+import { parseHlsPlaylist, type HlsPlaylist } from './fnos/hls.js';
+import { remuxFmp4ToWebm } from './media/remux.js';
 import { sanitizePlaylistName, parsePlaylistFile, playlistFileName, toJsonPlaylist, toM3u8Playlist } from './fnos/playlist-file.js';
 import { createTransport, transportKindOf } from './transport/index.js';
 import { readStreamBuffer, normalizeDirectAddress, normalizeFnid } from './transport/http.js';
@@ -65,6 +67,13 @@ const MAX_PLAYLIST_BATCH = 200;
 const MAX_SMART_PLAYLIST = 200;
 const PLAYLIST_CHUNK = 100;
 const DEFAULT_COVER_SIZE = '160';
+const COMPAT_CACHE_ENTRIES = 3;
+const COMPAT_CACHE_BYTES = 96 * 1024 * 1024;
+const COMPAT_STREAM_BYTES = 64 * 1024 * 1024;
+const COMPAT_HLS_TIMEOUT_MS = 30_000;
+const COMPAT_PLAYLIST_MAX_BYTES = 2 * 1024 * 1024;
+const COMPAT_SEGMENT_MAX_BYTES = 8 * 1024 * 1024;
+const COMPAT_SEGMENT_WORKERS = 4;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -137,6 +146,9 @@ export class MusicBridge {
   private rev = 0;
   private disposed = false;
   private activeStreams = new Set<IncomingMessage>();
+  private readonly compatCache = new Map<string, { at: number; buffer: Buffer; contentType: string }>();
+  private compatCacheBytes = 0;
+  private readonly compatPending = new Map<string, Promise<Result<{ buffer: Buffer; contentType: string }>>>();
   private historyTrackId: string | null = null;
   private historySource: 'play' | 'queue' | 'dj' | 'scene' = 'play';
   private homeCache: { at: number; key: string; data: Record<string, unknown> } | undefined;
@@ -385,6 +397,7 @@ export class MusicBridge {
   }
 
   private async activate(device: FnosTarget): Promise<void> {
+    this.clearCompatCache();
     this.library.invalidate();
     this.homeCache = undefined;
     this.librarySummary = null;
@@ -610,7 +623,8 @@ export class MusicBridge {
       if (found === undefined) {
         return fail('not_found', 'Track is not in the loaded library; search for it first');
       }
-      return { ok: true, data: [{ ...found }] };
+      const enriched = await this.enrichTrack(found);
+      return { ok: true, data: [enriched] };
     }
     const playlistId = str(params.playlistId);
     if (playlistId !== '') {
@@ -1722,6 +1736,7 @@ export class MusicBridge {
     this.librarySummary = null;
     await this.vault.reset();
     await this.cache.clear();
+    this.clearCompatCache();
     this.lastStatus.clear();
     await this.refreshCacheSummary();
     this.rev += 1;
@@ -1735,6 +1750,189 @@ export class MusicBridge {
 
   private mediaDeviceKey(): string {
     return `${this.activeDevice?.id ?? 'none'}\0${this.connection.currentTransport?.base ?? ''}`;
+  }
+
+  async trackMetadata(guid: string): Promise<ToolResult> {
+    const id = guid.trim();
+    if (id === '' || id.length > 300 || /[\s&?#]/.test(id)) {
+      return fail('bad_request', 'Invalid track guid');
+    }
+    const result = await this.fetchTrackMetadata(id);
+    if (result.ok !== true) return result;
+    return { ok: true, track: result.data };
+  }
+
+  private async fetchTrackMetadata(guid: string): Promise<Result<TrackRef>> {
+    const api = this.apiOrNull();
+    if (api === null) return fail('no_active_device', 'No active fnOS music transport');
+    return api.trackMetadata(guid);
+  }
+
+  /** Fill codec/channels for a queue/history track created before metadata was recorded. */
+  private async enrichTrack(track: TrackRef): Promise<TrackRef> {
+    if (track.format !== '' || track.codec !== '') return track;
+    const result = await this.fetchTrackMetadata(track.id);
+    if (result.ok !== true) return track;
+    return { ...track, ...result.data, favorite: track.favorite };
+  }
+
+  private clearCompatCache(): void {
+    this.compatCache.clear();
+    this.compatCacheBytes = 0;
+  }
+
+  private rememberCompat(key: string, value: { buffer: Buffer; contentType: string }): void {
+    const existing = this.compatCache.get(key);
+    if (existing !== undefined) this.compatCacheBytes -= existing.buffer.length;
+    this.compatCache.set(key, { at: Date.now(), ...value });
+    this.compatCacheBytes += value.buffer.length;
+    while (this.compatCache.size > COMPAT_CACHE_ENTRIES || this.compatCacheBytes > COMPAT_CACHE_BYTES) {
+      const oldest = this.compatCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      const entry = this.compatCache.get(oldest);
+      if (entry !== undefined) this.compatCacheBytes -= entry.buffer.length;
+      this.compatCache.delete(oldest);
+    }
+  }
+
+  private hlsPathOf(value: string): string | undefined {
+    let pathname = value;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+      try {
+        pathname = new URL(value).pathname;
+      } catch {
+        return undefined;
+      }
+    }
+    if (pathname.startsWith('/music/api/v1')) pathname = pathname.slice('/music/api/v1'.length);
+    if (!pathname.startsWith('/track/hls/')) return undefined;
+    if (pathname.includes('..') || pathname.includes('\\') || pathname.includes('\0')) return undefined;
+    return pathname;
+  }
+
+  private async readHlsPath(
+    api: FnosApi,
+    pathname: string,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<Result<Buffer>> {
+    let last: Result<Buffer> | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (signal?.aborted) return fail('cancelled', 'Compatibility conversion was cancelled');
+      const result = await api.hls(pathname, signal);
+      if (result.ok === true) {
+        if (result.data.status >= 400) {
+          last = fail('server', `HLS returned HTTP ${result.data.status}`);
+        } else {
+          const buffer = await readStreamBuffer(result.data.stream, maxBytes);
+          if (buffer.ok === true) return buffer;
+          last = buffer;
+        }
+      } else {
+        last = result;
+      }
+      if (last.ok === false && last.error.code === 'cancelled') return last;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return last ?? fail('server', 'HLS request failed');
+  }
+
+  private async readCompatSegments(
+    api: FnosApi,
+    base: string,
+    init: string,
+    segments: string[],
+    signal?: AbortSignal,
+  ): Promise<Result<Buffer[]>> {
+    const names = [init, ...segments];
+    const output: Buffer[] = new Array(names.length);
+    let total = 0;
+    for (let start = 0; start < names.length; start += COMPAT_SEGMENT_WORKERS) {
+      if (signal?.aborted) return fail('cancelled', 'Compatibility conversion was cancelled');
+      const batch = names
+        .slice(start, start + COMPAT_SEGMENT_WORKERS)
+        .map((name, offset) => ({ name, index: start + offset }));
+      const results = await Promise.all(batch.map(({ name }) => this.readHlsPath(
+        api,
+        `${base}/${name}`,
+        COMPAT_SEGMENT_MAX_BYTES,
+        signal,
+      )));
+      for (let index = 0; index < results.length; index += 1) {
+        const result = results[index];
+        if (result === undefined) return fail('server', 'HLS segment result is missing');
+        if (result.ok !== true) return result;
+        total += result.data.length;
+        if (total > COMPAT_STREAM_BYTES) return fail('unsupported', 'Compatible audio stream is too large');
+        output[start + index] = result.data;
+      }
+    }
+    return { ok: true, data: output };
+  }
+
+  private async buildCompatAudio(guid: string, signal?: AbortSignal): Promise<Result<{ buffer: Buffer; contentType: string }>> {
+    const api = this.apiOrNull();
+    if (api === null) return fail('no_active_device', 'No active fnOS music transport');
+    const started = await api.transcode(guid, 'opus', 2);
+    if (started.ok !== true) return started;
+    const playlistPath = this.hlsPathOf(started.data);
+    if (playlistPath === undefined) return fail('protocol', 'Transcode returned an invalid HLS URL');
+    try {
+      let playlist: HlsPlaylist | undefined;
+      const deadline = Date.now() + COMPAT_HLS_TIMEOUT_MS;
+      while (playlist === undefined) {
+        if (signal?.aborted) return fail('cancelled', 'Compatibility conversion was cancelled');
+        const raw = await this.readHlsPath(api, playlistPath, COMPAT_PLAYLIST_MAX_BYTES, signal);
+        if (raw.ok === true) {
+          const parsed = parseHlsPlaylist(raw.data.toString('utf8'));
+          if (parsed.ok !== true) return parsed;
+          if (parsed.data.complete) {
+            playlist = parsed.data;
+            break;
+          }
+        }
+        if (Date.now() >= deadline) {
+          return fail('unsupported', 'Timed out waiting for the compatibility transcode', {
+            hint: 'NAS 转码未在时限内完成，请检查 NAS 负载后重试。',
+          });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      const base = playlistPath.slice(0, playlistPath.lastIndexOf('/'));
+      const chunks = await this.readCompatSegments(api, base, playlist.init, playlist.segments, signal);
+      if (chunks.ok !== true) return chunks;
+      if (signal?.aborted) return fail('cancelled', 'Compatibility conversion was cancelled');
+      const fmp4 = Buffer.concat(chunks.data);
+      const webm = await remuxFmp4ToWebm(fmp4, signal);
+      if (webm.ok !== true) return webm;
+      return { ok: true, data: { buffer: webm.data, contentType: 'audio/webm' } };
+    } finally {
+      await api.transcodeQuit(guid).catch(() => undefined);
+    }
+  }
+
+  async compatAudio(guid: string): Promise<Result<{ buffer: Buffer; contentType: string }>> {
+    const id = guid.trim();
+    if (id === '' || id.length > 300 || /[\s&?#]/.test(id)) return fail('bad_request', 'Invalid track guid');
+    const key = `${this.mediaDeviceKey()}\0${id}`;
+    const cached = this.compatCache.get(key);
+    if (cached !== undefined) {
+      this.compatCache.delete(key);
+      this.compatCache.set(key, cached);
+      return { ok: true, data: { buffer: cached.buffer, contentType: cached.contentType } };
+    }
+    const pending = this.compatPending.get(key);
+    if (pending !== undefined) return pending;
+    const task = this.buildCompatAudio(id)
+      .then((result) => {
+        if (result.ok === true) this.rememberCompat(key, result.data);
+        return result;
+      })
+      .finally(() => {
+        this.compatPending.delete(key);
+      });
+    this.compatPending.set(key, task);
+    return task;
   }
 
   async cover(coverId: string, size: string): Promise<Result<{ buffer: Buffer; contentType: string }>> {
@@ -1814,6 +2012,7 @@ export class MusicBridge {
     void this.traffic.flush().finally(() => this.traffic.dispose());
     this.probeScheduler.dispose();
     this.connection.dispose();
+    this.clearCompatCache();
     for (const stream of this.activeStreams) stream.destroy();
     this.activeStreams.clear();
     this.hub.dispose();

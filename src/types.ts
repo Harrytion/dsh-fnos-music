@@ -93,6 +93,8 @@ export interface TrackRef {
   quality: Quality;
   bitrateKbps: number;
   format: string;
+  codec: string;
+  channels: number;
   bitDepth: number;
   sampleRate: number;
   favorite: boolean;
@@ -319,6 +321,9 @@ export interface HistoryEntry {
   coverId: string;
   genre: string;
   quality: Quality;
+  format: string;
+  codec: string;
+  channels: number;
   durationSec: number;
   listenedMs: number;
   completed: boolean;

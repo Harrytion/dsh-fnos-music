@@ -186,6 +186,12 @@ test('Host routes and Agent tools work end-to-end against a mock fnOS NAS', asyn
     assert.equal(albumDetail.body.tracks.length, 2);
     assert.equal(albumDetail.body.album.title, '叶惠美');
 
+    const trackMeta = await call(dshBase, 'GET', '/fnos-music/track-meta?guid=track-1');
+    assert.equal(trackMeta.status, 200, JSON.stringify(trackMeta.body));
+    assert.equal(trackMeta.body.ok, true);
+    assert.equal(trackMeta.body.track.codec, 'flac');
+    assert.equal(trackMeta.body.track.channels, 2);
+
     const artistDetail = await call(dshBase, 'GET', `/fnos-music/artist?name=${encodeURIComponent('周杰伦')}`);
     assert.equal(artistDetail.status, 200, JSON.stringify(artistDetail.body));
     assert.equal(artistDetail.body.ok, true);

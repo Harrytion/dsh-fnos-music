@@ -13,6 +13,9 @@ import { parseVoiceIntent } from '../lib/fnos/voice.js';
 import { Vault } from '../lib/state/vault.js';
 import { LibraryService } from '../lib/state/library.js';
 import { FnosApi } from '../lib/fnos/api.js';
+import { normalizeTrack } from '../lib/fnos/normalize.js';
+import { parseHlsPlaylist } from '../lib/fnos/hls.js';
+import { findFfmpeg, remuxFmp4ToWebm } from '../lib/media/remux.js';
 
 
 function memoryCredentials() {
@@ -509,4 +512,110 @@ test('FnosApi targets the exact album and artist track-list endpoints', async ()
   assert.equal(calls[0].query.page, 2);
   assert.equal(calls[0].query.size, 200);
   assert.equal(calls[1].query.artistGUID, 'artist-x');
+});
+
+test('normalizes codec and channel metadata for compatibility decisions', () => {
+  const normalized = normalizeTrack({
+    guid: 'dts-1',
+    title: 'DTS Track',
+    duration: 120000,
+    artists: [{ name: 'Artist' }],
+    album: { guid: 'album-dts', name: 'DTS Album' },
+    audioSpec: { format: 'wav', codec: 'dts', channel: 7, bitDepth: 16, sampleRate: 44100 },
+  });
+  assert.equal(normalized.format, 'wav');
+  assert.equal(normalized.codec, 'dts');
+  assert.equal(normalized.channels, 7);
+});
+
+test('parses only the fMP4 VOD HLS shape the compatibility pipeline requests', () => {
+  const parsed = parseHlsPlaylist([
+    '#EXTM3U',
+    '#EXT-X-VERSION:7',
+    '#EXT-X-MAP:URI="init.mp4"',
+    '#EXTINF:2.0,',
+    '00000.m4s',
+    '#EXTINF:2.0,',
+    '00001.m4s',
+    '#EXT-X-ENDLIST',
+  ].join('\n'));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.data.init, 'init.mp4');
+  assert.deepEqual(parsed.data.segments, ['00000.m4s', '00001.m4s']);
+  assert.equal(parsed.data.complete, true);
+  assert.equal(parsed.data.durationSec, 4);
+  const encrypted = parseHlsPlaylist('#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="k"\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:2,\na.m4s\n');
+  assert.equal(encrypted.ok, false);
+  assert.equal(encrypted.error.code, 'unsupported');
+});
+
+test('FnosApi uses track metadata and transcode endpoints with the expected request shape', async () => {
+  const calls = [];
+  const raw = {
+    guid: 'track-dts',
+    title: 'DTS Track',
+    duration: 120000,
+    artists: [{ name: 'Artist' }],
+    album: { guid: 'album-dts', name: 'DTS Album' },
+    audioSpec: { format: 'wav', codec: 'dts', channel: 7 },
+  };
+  const api = new FnosApi({
+    async request(path, options) {
+      calls.push({ path, options });
+      if (path === '/track/metadata') return { ok: true, data: { track: raw } };
+      return { ok: true, data: { status: 'success', url: '/music/api/v1/track/hls/track-dts/preset.m3u8' } };
+    },
+  });
+  const metadata = await api.trackMetadata('track-dts');
+  assert.equal(metadata.ok, true);
+  assert.equal(metadata.data.codec, 'dts');
+  assert.equal(metadata.data.channels, 7);
+  const transcode = await api.transcode('track-dts');
+  assert.equal(transcode.ok, true);
+  assert.equal(transcode.data, '/music/api/v1/track/hls/track-dts/preset.m3u8');
+  assert.equal(calls[0].path, '/track/metadata');
+  assert.equal(calls[0].options.query.guid, 'track-dts');
+  assert.equal(calls[1].path, '/track/transcode');
+  assert.deepEqual(calls[1].options.body, { guid: 'track-dts', output: { codec: 'opus', channel: 2 } });
+});
+
+test('compat remux uses ffmpeg when available and produces a WebM buffer', async (t) => {
+  if (findFfmpeg() === undefined) {
+    t.skip('ffmpeg is not installed');
+    return;
+  }
+  const { execFileSync } = await import('node:child_process');
+  const dir = await tempDir();
+  const input = path.join(dir, 'input.mp4');
+  try {
+    execFileSync(findFfmpeg(), [
+      '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
+      '-c:a', 'libopus', '-b:a', '64k', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov',
+      input,
+    ]);
+    const result = await remuxFmp4ToWebm(await fs.readFile(input));
+    assert.equal(result.ok, true);
+    assert.ok(result.data.length > 0);
+    assert.equal(result.data.subarray(0, 4).toString('hex'), '1a45dfa3');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('history snapshots keep codec and channel metadata', async () => {
+  const dir = await tempDir();
+  const history = new HistoryService(dir);
+  await history.start('default');
+  history.startTrack(track('dts', { format: 'wav', codec: 'dts', channels: 7 }), 'device-1');
+  history.progress(10_000, 'playing');
+  history.finish();
+  await history.flush();
+  const snap = history.findTrack('dts');
+  assert.equal(snap.format, 'wav');
+  assert.equal(snap.codec, 'dts');
+  assert.equal(snap.channels, 7);
+  const raw = await history.list('all', 0, 10);
+  assert.equal(raw.items[0].codec, 'dts');
+  assert.equal(raw.items[0].channels, 7);
+  await history.dispose();
 });

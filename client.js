@@ -137,6 +137,8 @@ window.__ModuleLoader__.load({
       largeLibraryHint: '曲库较大，已启用分页加载。',
       audioError: '音频播放失败',
       audioRetry: '重试播放',
+      compatLoading: '正在准备兼容音轨…',
+      compatError: '该格式需要兼容转码，请确认 ffmpeg 可用',
       autoplayBlocked: '浏览器拦截了自动播放，点一下播放按钮即可。',
       claimPlayback: '在此页面播放',
       otherPagePlaying: '另一个页面正在播放',
@@ -483,6 +485,8 @@ window.__ModuleLoader__.load({
       largeLibraryHint: 'Large library; paging is enabled.',
       audioError: 'Audio playback failed',
       audioRetry: 'Retry audio',
+      compatLoading: 'Preparing compatible audio…',
+      compatError: 'This format needs compatibility transcoding; check ffmpeg.',
       autoplayBlocked: 'The browser blocked autoplay; press play once.',
       claimPlayback: 'Play in this page',
       otherPagePlaying: 'Another page is playing',
@@ -757,6 +761,7 @@ window.__ModuleLoader__.load({
       sse: 'idle',
       toast: null,
       audioError: '',
+      compatLoading: false,
       isDriver: false,
       favorites: {},
       loadError: '',
@@ -767,6 +772,7 @@ window.__ModuleLoader__.load({
       store.sse = patch.sse !== undefined ? patch.sse : store.sse;
       store.toast = patch.toast !== undefined ? patch.toast : store.toast;
       store.audioError = patch.audioError !== undefined ? patch.audioError : store.audioError;
+      store.compatLoading = patch.compatLoading !== undefined ? patch.compatLoading : store.compatLoading;
       store.isDriver = patch.isDriver !== undefined ? patch.isDriver : store.isDriver;
       store.favorites = patch.favorites !== undefined ? patch.favorites : store.favorites;
       store.loadError = patch.loadError !== undefined ? patch.loadError : store.loadError;
@@ -886,6 +892,7 @@ window.__ModuleLoader__.load({
 
     let audio = null;
     let audioTrackId = null;
+    let audioSource = '';
     let lastSeekToken = -1;
     let lastProgressAt = 0;
     let progressInFlight = false;
@@ -941,6 +948,7 @@ window.__ModuleLoader__.load({
       audio = new Audio();
       audio.preload = 'auto';
       audio.addEventListener('loadedmetadata', () => {
+        setStore({ compatLoading: false });
         const player = store.snapshot && store.snapshot.player;
         if (player && audio && Number.isFinite(player.positionMs) && player.positionMs > 0) {
           try {
@@ -973,13 +981,53 @@ window.__ModuleLoader__.load({
       });
       audio.addEventListener('error', () => {
         if (!audio || !audioTrackId) return;
-        setStore({ audioError: 'audio' });
+        setStore({ audioError: audioSource.includes('/compat') ? 'compat' : 'audio', compatLoading: false });
         apiFetch('/player', {
           method: 'POST',
           body: { action: 'error', clientId, message: 'Audio element failed to load the stream' },
         }).catch(() => {});
       });
       return audio;
+    }
+
+    const COMPAT_CODECS = new Set(['dts', 'dtshd', 'dts-hd', 'ac3', 'eac3', 'truehd', 'ape', 'alac', 'dsd', 'wma', 'wmapro', 'tta', 'wv']);
+    const COMPAT_FORMATS = new Set(['dsf', 'dff', 'ape', 'wma', 'dts', 'ac3']);
+
+    function trackNeedsCompat(track) {
+      if (!track) return false;
+      const codec = String(track.codec || '').trim().toLowerCase();
+      const format = String(track.format || '').trim().toLowerCase();
+      if (COMPAT_CODECS.has(codec) || COMPAT_FORMATS.has(format)) return true;
+      return Number(track.channels) > 2;
+    }
+
+    function audioSourceFor(track) {
+      return trackNeedsCompat(track)
+        ? `${API}/compat?guid=${encodeURIComponent(track.id)}`
+        : `${API}/stream?guid=${encodeURIComponent(track.id)}`;
+    }
+
+    function setAudioTrack(track) {
+      const element = ensureAudio();
+      const source = audioSourceFor(track);
+      if (audioTrackId === track.id && audioSource === source) return element;
+      audioTrackId = track.id;
+      audioSource = source;
+      element.src = source;
+      element.load();
+      lastSeekToken = -1;
+      setStore({ audioError: '', compatLoading: trackNeedsCompat(track) });
+      return element;
+    }
+
+    async function hydrateTrack(track) {
+      if (!track || track.codec || track.format) return track;
+      try {
+        const data = await apiFetch(`/track-meta?guid=${encodeURIComponent(track.id)}`);
+        return data && data.track ? { ...track, ...data.track } : track;
+      } catch {
+        return track;
+      }
     }
 
     function stopAudio() {
@@ -994,6 +1042,7 @@ window.__ModuleLoader__.load({
       }
       audio = null;
       audioTrackId = null;
+      audioSource = '';
       lastSeekToken = -1;
     }
 
@@ -1016,14 +1065,7 @@ window.__ModuleLoader__.load({
         audioTrackId = null;
         return;
       }
-      const element = ensureAudio();
-      if (audioTrackId !== player.track.id) {
-        audioTrackId = player.track.id;
-        element.src = `${API}/stream?guid=${encodeURIComponent(player.track.id)}`;
-        element.load();
-        lastSeekToken = -1;
-        setStore({ audioError: '' });
-      }
+      const element = setAudioTrack(player.track);
       if (player.seekToken !== lastSeekToken) {
         lastSeekToken = player.seekToken;
         try {
@@ -1095,14 +1137,8 @@ window.__ModuleLoader__.load({
       if (!track) return;
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
-      const element = ensureAudio();
-      if (audioTrackId !== track.id) {
-        audioTrackId = track.id;
-        element.src = `${API}/stream?guid=${encodeURIComponent(track.id)}`;
-        element.load();
-        lastSeekToken = -1;
-      }
-      setStore({ audioError: '' });
+      const playable = await hydrateTrack(track);
+      const element = setAudioTrack(playable);
       const started = element.play();
       if (started && typeof started.catch === 'function') {
         started.catch(() => setStore({ audioError: 'autoplay' }));
@@ -1121,14 +1157,8 @@ window.__ModuleLoader__.load({
       if (!player || !player.track) return;
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
-      const element = ensureAudio();
-      if (audioTrackId !== player.track.id) {
-        audioTrackId = player.track.id;
-        element.src = `${API}/stream?guid=${encodeURIComponent(player.track.id)}`;
-        element.load();
-        lastSeekToken = -1;
-      }
-      setStore({ audioError: '' });
+      const playable = await hydrateTrack(player.track);
+      const element = setAudioTrack(playable);
       if (player.status === 'playing' && !element.paused) {
         element.pause();
         await postPlayer({ action: 'pause' });
@@ -1651,6 +1681,7 @@ window.__ModuleLoader__.load({
       const modeIcon = player.mode === 'one' ? 'repeatOne' : player.mode === 'shuffle' ? 'shuffle' : 'repeat';
       const modeText = player.mode === 'one' ? t('repeatOne') : player.mode === 'shuffle' ? t('shuffle') : t('repeatAll');
       const audioError = useStoreValue((value) => value.audioError);
+      const compatLoading = useStoreValue((value) => value.compatLoading);
       return h('section', { className: 'fnm-player', 'aria-label': t('currentTrack') },
         h('div', { className: 'fnm-now' },
           h(Cover, { coverId: track ? track.coverId : '', size: 52, alt: track ? track.title : '' }),
@@ -1717,8 +1748,9 @@ window.__ModuleLoader__.load({
             hasDriver ? t('otherPagePlaying') : t('noAudioClient'),
             h('button', { type: 'button', className: 'fnm-link', onClick: props.onClaim }, t('claimPlayback')),
           ) : null,
+          compatLoading ? h('span', { className: 'fnm-hintline' }, t('compatLoading')) : null,
           audioError ? h('span', { className: 'fnm-hintline fnm-errorline' },
-            audioError === 'autoplay' ? t('autoplayBlocked') : t('audioError'),
+            audioError === 'autoplay' ? t('autoplayBlocked') : audioError === 'compat' ? t('compatError') : t('audioError'),
             h('button', { type: 'button', className: 'fnm-link', onClick: props.onPlayPause }, t('audioRetry')),
           ) : null,
         ),
@@ -3117,7 +3149,9 @@ window.__ModuleLoader__.load({
         coverId: entry.coverId || '',
         quality: entry.quality,
         bitrateKbps: 0,
-        format: '',
+        format: entry.format || '',
+        codec: entry.codec || '',
+        channels: Number(entry.channels) || 0,
         bitDepth: 0,
         sampleRate: 0,
         favorite: false,

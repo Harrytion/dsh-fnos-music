@@ -82,6 +82,76 @@ function sendToolResult(response: ServerResponse, result: ToolResult): void {
   sendError(response, result.error);
 }
 
+function sendMediaBuffer(
+  request: IncomingMessage,
+  response: ServerResponse,
+  buffer: Buffer,
+  contentType: string,
+  cacheControl = 'private, max-age=3600',
+): void {
+  if (response.writableEnded || response.destroyed) return;
+  const total = buffer.length;
+  const header = String(request.headers.range ?? '').trim();
+  let start = 0;
+  let end = total - 1;
+  let status = 200;
+  if (header !== '') {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(header);
+    if (match === null) {
+      response.statusCode = 416;
+      response.setHeader('content-range', `bytes */${total}`);
+      response.setHeader('accept-ranges', 'bytes');
+      response.end();
+      return;
+    }
+    const first = match[1] ?? '';
+    const last = match[2] ?? '';
+    if (first === '' && last === '') {
+      response.statusCode = 416;
+      response.setHeader('content-range', `bytes */${total}`);
+      response.end();
+      return;
+    }
+    if (first === '') {
+      const suffix = Number(last);
+      if (!Number.isSafeInteger(suffix) || suffix <= 0) {
+        response.statusCode = 416;
+        response.setHeader('content-range', `bytes */${total}`);
+        response.end();
+        return;
+      }
+      start = Math.max(0, total - suffix);
+    } else {
+      start = Number(first);
+      end = last === '' ? total - 1 : Math.min(Number(last), total - 1);
+    }
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= total || end < start) {
+      response.statusCode = 416;
+      response.setHeader('content-range', `bytes */${total}`);
+      response.setHeader('accept-ranges', 'bytes');
+      response.end();
+      return;
+    }
+    status = 206;
+  }
+  const length = end - start + 1;
+  response.statusCode = status;
+  response.setHeader('content-type', contentType);
+  response.setHeader('content-length', String(length));
+  response.setHeader('accept-ranges', 'bytes');
+  response.setHeader('cache-control', cacheControl);
+  if (status === 206) response.setHeader('content-range', `bytes ${start}-${end}/${total}`);
+  if ((request.method ?? 'GET').toUpperCase() === 'HEAD') {
+    response.end();
+    return;
+  }
+  try {
+    response.end(buffer.subarray(start, end + 1));
+  } catch {
+    // The browser can abort a media request while the response is being written.
+  }
+}
+
 function queryOf(request: IncomingMessage): URLSearchParams {
   return new URL(String(request.url ?? '/'), 'http://127.0.0.1').searchParams;
 }
@@ -130,6 +200,10 @@ export function registerRoutes(scope: DshScope, bridge: MusicBridge): void {
   route('GET', '/artist', async (request, response) => {
     const query = queryOf(request);
     sendToolResult(response, await bridge.artist({ name: query.get('name') ?? '' }));
+  });
+
+  route('GET', '/track-meta', async (request, response) => {
+    sendToolResult(response, await bridge.trackMetadata(queryOf(request).get('guid') ?? ''));
   });
 
   route('GET', '/stats', async (request, response) => {
@@ -452,6 +526,18 @@ export function registerRoutes(scope: DshScope, bridge: MusicBridge): void {
     response.end(result.data.buffer);
   });
 
+  route('GET', '/compat', async (request, response) => {
+    // The browser may open, abort and retry the media request. Keep the
+    // conversion independent of any one request so a retry can join the same
+    // build instead of cancelling it.
+    const result = await bridge.compatAudio(queryOf(request).get('guid') ?? '');
+    if (result.ok !== true) {
+      sendError(response, result.error);
+      return;
+    }
+    sendMediaBuffer(request, response, result.data.buffer, result.data.contentType);
+  });
+
   route('GET', '/stream', async (request, response) => {
     const query = queryOf(request);
     const guid = query.get('guid') ?? '';
@@ -499,7 +585,7 @@ export function registerRoutes(scope: DshScope, bridge: MusicBridge): void {
           if (reject(scope, request, response)) return;
           const requestMethod = methodOf(request);
           const direct = requestMethod === 'GET' || requestMethod === 'POST' ? methods[requestMethod] : undefined;
-          const headFallback = requestMethod === 'HEAD' && (path === '/cover' || path === '/stream') ? methods.GET : undefined;
+          const headFallback = requestMethod === 'HEAD' && (path === '/cover' || path === '/stream' || path === '/compat') ? methods.GET : undefined;
           const handler = direct ?? headFallback;
           if (handler === undefined) {
             response.statusCode = 405;

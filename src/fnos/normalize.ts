@@ -79,6 +79,8 @@ export function normalizeTrack(rawValue: unknown): TrackRef {
     quality: qualityOf(spec),
     bitrateKbps: Math.round(numberOf(spec.bitrate) / 1000),
     format: text(spec.format) || text(spec.codec),
+    codec: text(spec.codec).toLowerCase(),
+    channels: numberOf(spec.channel),
     bitDepth: numberOf(spec.bitDepth),
     sampleRate: numberOf(spec.sampleRate),
     favorite: raw.isFavorite === true,

@@ -8,6 +8,7 @@ import type {
   ArtistRef,
   PlaylistRef,
   Result,
+  StreamResponse,
   TrackRef,
 } from '../types.js';
 import { fail } from '../errors.js';
@@ -138,6 +139,43 @@ export class FnosApi {
   /** Exact artist track list used instead of the bounded full-library scan. */
   artistTrackList(artistGUID: string, page: number, size: number): Promise<Result<Page<TrackRef>>> {
     return this.pageWith('/track/artist-detail/list', page, size, normalizeTrack, { artistGUID });
+  }
+
+  /** Per-track metadata, used to recover codec/channels for history rows. */
+  async trackMetadata(guid: string): Promise<Result<TrackRef>> {
+    const result = await this.transport.request<unknown>('/track/metadata', { query: { guid } });
+    if (result.ok !== true) return result;
+    const data = recordOf(result.data);
+    const track = recordOf(data.track);
+    const normalized = normalizeTrack(Object.keys(track).length > 0 ? track : data);
+    if (normalized.id === '') return fail('not_found', 'Track metadata was empty');
+    return { ok: true, data: normalized };
+  }
+
+  /** Ask the NAS to transcode one track; returns the server-relative HLS URL. */
+  async transcode(guid: string, codec = 'opus', channel = 2): Promise<Result<string>> {
+    const result = await this.transport.request<unknown>('/track/transcode', {
+      method: 'POST',
+      body: { guid, output: { codec, channel } },
+    });
+    if (result.ok !== true) return result;
+    const url = text(recordOf(result.data).url);
+    if (url === '') return fail('unsupported', 'Transcode did not return a URL');
+    return { ok: true, data: url };
+  }
+
+  /** Best-effort release of a server transcode session. */
+  async transcodeQuit(guid: string): Promise<Result<null>> {
+    const result = await this.transport.request<unknown>('/track/transcode/quit', {
+      method: 'POST',
+      body: { guid },
+    });
+    return result.ok === true ? { ok: true, data: null } : result;
+  }
+
+  /** Read one HLS file (playlist, init or segment) through the authenticated transport. */
+  hls(path: string, signal?: AbortSignal): Promise<Result<StreamResponse>> {
+    return this.transport.stream(path, { signal, timeoutMs: 20_000 });
   }
 
   listAlbums(page: number, size: number): Promise<Result<Page<AlbumRef>>> {

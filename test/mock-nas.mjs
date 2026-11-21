@@ -52,6 +52,7 @@ export const TRACKS = [
       sampleRate: 96000,
       bitrate: 1411200,
       codec: 'flac',
+      channel: 2,
     },
   },
   {
@@ -71,6 +72,7 @@ export const TRACKS = [
       sampleRate: 44100,
       bitrate: 900000,
       codec: 'flac',
+      channel: 2,
     },
   },
   {
@@ -90,6 +92,7 @@ export const TRACKS = [
       sampleRate: 48000,
       bitrate: 1200000,
       codec: 'flac',
+      channel: 2,
     },
   },
 ];
@@ -259,6 +262,16 @@ export function startMockNas() {
       const name = names[guid] ?? '';
       const tracks = TRACKS.filter((track) => track.artists.some((artist) => artist.name === name));
       json(paged(tracks, url));
+      return;
+    }
+    if (path === `${API}/track/metadata`) {
+      const guid = url.searchParams.get('guid');
+      const track = TRACKS.find((entry) => entry.guid === guid);
+      if (track === undefined) {
+        json({ code: 404, msg: 'track not found', data: null });
+        return;
+      }
+      json(envelope({ track, audioSpec: track.audioSpec }));
       return;
     }
     if (path === `${API}/search/track`) {
