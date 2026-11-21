@@ -626,14 +626,14 @@ export class MusicBridge {
       const enriched = await this.enrichTrack(found);
       return { ok: true, data: [enriched] };
     }
-    const playlistId = str(params.playlistId);
+    const playlistId = str(params.playlistId) || str(params.playlist);
     if (playlistId !== '') {
       const result = await this.library.playlistDetail(playlistId);
       if (result.ok !== true) return result;
       if (result.data.items.length === 0) return fail('not_found', 'Playlist has no tracks');
       return { ok: true, data: result.data.items.slice(0, limit) };
     }
-    const albumId = str(params.albumId);
+    const albumId = str(params.albumId) || str(params.album);
     if (albumId !== '') {
       const result = await this.library.albumTracks(albumId);
       if (result.ok !== true) return result;

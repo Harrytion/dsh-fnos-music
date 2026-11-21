@@ -1147,8 +1147,10 @@ window.__ModuleLoader__.load({
     }
 
     async function playCollection(kind, id) {
+      if (id === undefined || id === null || id === '') return;
       void claimDriver();
-      await postPlayer({ action: 'play', [kind]: id });
+      const field = kind === 'album' ? 'albumId' : kind === 'playlist' ? 'playlistId' : kind;
+      await postPlayer({ action: 'play', [field]: id });
     }
 
     async function togglePlay() {

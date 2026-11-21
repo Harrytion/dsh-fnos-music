@@ -488,6 +488,28 @@ test('Host routes and Agent tools work end-to-end against a mock fnOS NAS', asyn
     assert.equal(second.ok, true, JSON.stringify(second));
     assert.equal(second.changed, 2);
 
+    const legacyAlbumPlay = await call(dshBase, 'POST', '/fnos-music/player', { action: 'play', album: 'album-1' });
+    assert.equal(legacyAlbumPlay.status, 200, JSON.stringify(legacyAlbumPlay.body));
+    assert.equal(legacyAlbumPlay.body.ok, true);
+    assert.equal(legacyAlbumPlay.body.added, 2);
+    assert.equal(legacyAlbumPlay.body.player.queueTotal, 2);
+
+    const canonicalAlbumPlay = await call(dshBase, 'POST', '/fnos-music/player', { action: 'play', albumId: 'album-1' });
+    assert.equal(canonicalAlbumPlay.body.ok, true);
+    assert.equal(canonicalAlbumPlay.body.added, 2);
+
+    const legacyPlaylistPlay = await call(dshBase, 'POST', '/fnos-music/player', { action: 'play', playlist: 'pl-1' });
+    assert.equal(legacyPlaylistPlay.body.ok, true);
+    assert.equal(legacyPlaylistPlay.body.added, 2);
+
+    const canonicalPlaylistPlay = await call(dshBase, 'POST', '/fnos-music/player', { action: 'play', playlistId: 'pl-1' });
+    assert.equal(canonicalPlaylistPlay.body.ok, true);
+    assert.equal(canonicalPlaylistPlay.body.added, 2);
+
+    const missingAlbumPlay = await call(dshBase, 'POST', '/fnos-music/player', { action: 'play', album: '' });
+    assert.equal(missingAlbumPlay.status, 400);
+    assert.equal(missingAlbumPlay.body.error.code, 'bad_request');
+
     const sse = await new Promise((resolve, reject) => {
       const request = http.get(`${dshBase}/fnos-music/events`, (response) => {
         let data = '';
