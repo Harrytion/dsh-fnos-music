@@ -7,10 +7,10 @@
  * it is missing the caller returns a clear error instead of playing noise.
  */
 import { spawn } from 'node:child_process';
-import { accessSync, constants, existsSync, promises as fs } from 'node:fs';
+import { accessSync, constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Result } from '../types.js';
+import type { CompatBackend, Result } from '../types.js';
 import { fail } from '../errors.js';
 
 const MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
@@ -27,8 +27,27 @@ function executable(file: string): boolean {
   }
 }
 
+/** Forget the cached lookup so a preflight/settings refresh can re-detect. */
+export function resetFfmpegCache(): void {
+  cachedFfmpeg = undefined;
+}
+
+/** Pure backend selection, useful for preflight and tests. */
+export function compatBackendFor(ffmpeg: string | undefined): CompatBackend {
+  return ffmpeg === undefined ? 'mse' : 'ffmpeg';
+}
+
+/** Preferred compatibility backend: ffmpeg when present, browser MSE otherwise. */
+export function compatBackend(): CompatBackend {
+  return compatBackendFor(findFfmpeg());
+}
+
 /** Locate ffmpeg without a shell; `DSH_FNOS_FFMPEG` can pin an explicit path. */
 export function findFfmpeg(): string | undefined {
+  if (process.env.DSH_FNOS_COMPAT_FORCE_MSE === '1') {
+    cachedFfmpeg = null;
+    return undefined;
+  }
   if (cachedFfmpeg !== undefined) return cachedFfmpeg ?? undefined;
   const candidates: string[] = [];
   const configured = process.env.DSH_FNOS_FFMPEG;

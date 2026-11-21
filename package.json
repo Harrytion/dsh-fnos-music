@@ -1,6 +1,6 @@
 {
   "name": "dsh-fnos-music",
-  "version": "3.0.4",
+  "version": "3.0.5",
   "private": true,
   "type": "module",
   "description": "Feiniu Music bridge for DeepSeek Harness V3: original-web-style app shell, local history/stats, listener profiles, scenes and continuous AI DJ, voice intent, audit/read-only agent mode, traffic stats, and the V2 transports/playlists/floating player.",
@@ -17,7 +17,8 @@
     "cordis.patch.yml",
     "locale/*.json",
     "README.md",
-    "icon.svg"
+    "icon.svg",
+    "scripts"
   ],
   "dsh": {
     "bundle": {
@@ -47,7 +48,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "preflight": "node scripts/preflight.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -1,8 +1,8 @@
 # dsh-fnos-music V3
 
-飞牛音乐（fnOS Music）的 DeepSeek Harness 插件。V3 把主面板重构成**原版飞牛音乐 Web 式交互**，并在纯本地曲库之上加入收听历史、统计、成员 profile、场景 BGM、连续本地 DJ、语音指令、Agent 审计与流量统计。当前补丁版本 **3.0.4** 修复了专辑/歌单“全部播放”因参数名不匹配报“请求参数不完整或格式不正确”的问题；3.0.3 修复了 DTS/APE 等浏览器不支持的格式播放为噪音；3.0.2 修复了歌手页专辑点开后不显示歌曲；3.0.1 修复了最近播放重复与历史条目无法继续播放。
+飞牛音乐（fnOS Music）的 DeepSeek Harness 插件。V3 把主面板重构成**原版飞牛音乐 Web 式交互**，并在纯本地曲库之上加入收听历史、统计、成员 profile、场景 BGM、连续本地 DJ、语音指令、Agent 审计与流量统计。当前补丁版本 **3.0.5** 增加无 ffmpeg Host 的 MSE 备用播放；3.0.4 修复了专辑/歌单“全部播放”参数映射；3.0.3 修复了 DTS/APE 等格式播放为噪音；3.0.2 修复了歌手页专辑点开后不显示歌曲；3.0.1 修复了最近播放重复与历史条目无法继续播放。
 
-> V3 只连接你自己的 fnOS 曲库。**不内置、不提供任何在线音源**；可选在线源子插件不在本次交付中。普通格式由本机 DSH Host 同源 Range 中继直出；浏览器不支持的 DTS/APE 等格式由 fnOS 原生转码 + 本机 ffmpeg 封装为可 seek 的 WebM，仅在 Host 内存缓存、不外传。
+> V3 只连接你自己的 fnOS 曲库。**不内置、不提供任何在线音源**；可选在线源子插件不在本次交付中。普通格式由本机 DSH Host 同源 Range 中继直出；浏览器不支持的 DTS/APE 等格式由 fnOS 原生转码，Host 有 ffmpeg 时封装为可 seek 的 WebM，没有 ffmpeg 时使用浏览器 MSE 播放 Opus/fMP4。兼容音频仅在 Host 内存缓存、不外传。
 
 ## 1. 原版 Web 交互
 
@@ -67,7 +67,18 @@
 
 ## 3. 安装与启用
 
-插件作为 DSH Profile bundle 安装/链接；`package.json` 版本 `3.0.0`。
+插件作为 DSH Profile bundle 安装/链接；`package.json` 版本 `3.0.5`。
+
+安装前可先检查 Host 能力：
+
+```bash
+node scripts/preflight.mjs
+# 无 ffmpeg 时仍可安装；插件会使用浏览器 MSE 备用
+```
+
+ffmpeg 是兼容播放的首选后端；没有 ffmpeg 时，DTS/APE 等格式使用 fnOS Opus/fMP4 + 浏览器 MSE。普通 FLAC/MP3/PCM WAV 不依赖 ffmpeg。
+
+排障时可用 `DSH_FNOS_COMPAT_FORCE_MSE=1 node scripts/preflight.mjs` 模拟无 ffmpeg 环境。
 
 ```bash
 # 在 DSH 的插件管理/Profile 中启用 dsh-fnos-music
@@ -128,7 +139,7 @@ Agent 写工具受 `agentWrites` 开关与审计约束；高危工具仍需要 `
 
 - 官方 fnOS API 没有播放器状态/队列/控制接口；官方 App 与 DSH 的实时播放状态不互通，插件维护自己的共享队列。
 - 专辑/歌手详情在部分固件的 `/album/detail` 中不含曲目；3.0.2 改用 `track/album-detail/list` 与 `track/artist-detail/list` 获取曲目，避免依赖曲库前 500 首扫描。
-- DTS WAV、APE 等格式浏览器不能直接解码；3.0.3 使用 fnOS `track/transcode` 生成 Opus HLS，再用本机 ffmpeg 转为 WebM。**兼容播放需要 Host 安装 ffmpeg**；没有 ffmpeg 时显示明确错误，不会播放噪音。首次兼容转换约 10–30 秒（取决于 NAS 转码和 FNID 带宽），之后同一曲目命中内存缓存。
+- DTS WAV、APE 等格式浏览器不能直接解码；3.0.5 使用 fnOS `track/transcode` 生成 Opus/fMP4。Host 有 ffmpeg 时优先转成 WebM；**没有 ffmpeg 时自动使用浏览器 MSE 播放 fMP4**，不会因为缺少 ffmpeg 直接失败。首次兼容转换约 10–30 秒（取决于 NAS 转码和 FNID 带宽），之后同一曲目命中内存缓存。
 - 官方网页端不支持扫码登录；本插件用 FNID/局域网直连 token。
 - 部分固件的 `/album/detail` 不含曲目；3.0.2 优先使用 `track/album-detail/list`，仅老固件回退专辑名搜索。不同固件字段仍可能不同。
 - 不读取 NAS 本地 LRC 文件；歌词依赖服务端 LRC。
@@ -145,13 +156,14 @@ pnpm build
 pnpm test    # node --test test/*.test.mjs
 ```
 
-3.0.4 交付验证：
+3.0.5 交付验证：
 
-- **70 个测试通过**，覆盖传输、队列、播放器、歌单、歌词、历史/统计/最近播放去重、旧历史播放回退、专辑/歌手原生曲目端点、DTS/APE 兼容转码（HLS 解析、ffmpeg 封装、codec/channels 持久化）、专辑/歌单 legacy 参数兼容、成员、场景/DJ、语音意图、审计、流量、mock NAS Host 路由与 Agent 读只写守卫。
+- **75 个测试通过**，覆盖传输、队列、播放器、歌单、歌词、历史/统计/最近播放去重、旧历史播放回退、专辑/歌手原生曲目端点、DTS/APE 兼容转码（HLS 解析、ffmpeg 封装、MSE 备用、codec/channels 持久化）、专辑/歌单 legacy 参数兼容、成员、场景/DJ、语音意图、审计、流量、mock NAS Host 路由与 Agent 读只写守卫。
 - 真实 fnOS NAS（FNID 中继）已验证：连接、2,353 首曲库搜索、播放、历史、统计、专辑详情回退、场景、DJ 池、16 个工具。
 - 桌面 Web 面板在真实 DSH UI 中验证：4 个 slot、首页/歌曲/专辑/歌手/歌单/文件夹/收藏/正在播放/场景/统计/设置渲染，搜索/详情/右键/多选/统计图无控制台异常；最近播放按歌曲去重，刷新后点击旧历史可直接播放。
 - 3.0.3 的真实 NAS 验证：DTS WAV 与 APE 的 `/compat` 均生成有效 WebM/Opus（DTS 285.9s、APE 259.7s）；真实 Chrome 的 `<audio>` 对 `/compat` 触发 `loadedmetadata`/`canplaythrough`，可正常播放且 `currentTime` 持续推进；客户端会请求 `/compat` 而不是直连 `/stream`，普通 FLAC 仍由 `/stream` 直出。
 - 3.0.4 的真实 NAS 验证：专辑《最炫民族风》26 首，使用 legacy `album` 字段与规范 `albumId` 字段执行“全部播放”均成功入队 26 首，不再返回 `bad_request`。
+- 3.0.5 的兼容播放：有 ffmpeg 时继续 WebM；强制无 ffmpeg 时 `/compat` 返回 Opus/fMP4，Headful Chrome MSE 实测 `readyState=4`、`duration≈285.9`、`currentTime` 持续推进。
 - 仍需实机确认：真实音频声卡/MediaSession、频谱支持、不同浏览器语音识别、真实官方 App 状态、极端大曲库（>10k）长列表、更多 DTS/APE 文件样本。
 - 最近播放去重只影响视图，不重写历史文件；统计仍按真实播放次数计算。
 

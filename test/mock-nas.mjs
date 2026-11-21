@@ -264,6 +264,32 @@ export function startMockNas() {
       json(paged(tracks, url));
       return;
     }
+    if (request.method === 'POST' && path === `${API}/track/transcode`) {
+      void readBody().then(() => json(envelope({
+        status: 'success',
+        hlsTime: 2,
+        url: '/music/api/v1/track/hls/track-1/preset.m3u8',
+      })));
+      return;
+    }
+    if (request.method === 'POST' && path === `${API}/track/transcode/quit`) {
+      void readBody().then(() => json(envelope(null)));
+      return;
+    }
+    if (path === `${API}/track/hls/track-1/preset.m3u8`) {
+      send(200, '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:2.0,\n00000.m4s\n#EXT-X-ENDLIST\n', {
+        'content-type': 'application/vnd.apple.mpegurl',
+      });
+      return;
+    }
+    if (path === `${API}/track/hls/track-1/init.mp4`) {
+      send(200, Buffer.alloc(0), { 'content-type': 'video/mp4' });
+      return;
+    }
+    if (path === `${API}/track/hls/track-1/00000.m4s`) {
+      send(200, Buffer.from('fmp4'), { 'content-type': 'video/iso.segment' });
+      return;
+    }
     if (path === `${API}/track/metadata`) {
       const guid = url.searchParams.get('guid');
       const track = TRACKS.find((entry) => entry.guid === guid);

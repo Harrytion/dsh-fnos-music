@@ -8,6 +8,7 @@ import path from 'node:path';
 import type {
   AuditEntry,
   CacheSummary,
+  CompatStatus,
   ConnectionView,
   CredentialsLike,
   DeviceView,
@@ -39,7 +40,7 @@ import { fail, makeError } from './errors.js';
 import { FnosApi } from './fnos/api.js';
 import { parseLrc } from './fnos/lrc.js';
 import { parseHlsPlaylist, type HlsPlaylist } from './fnos/hls.js';
-import { remuxFmp4ToWebm } from './media/remux.js';
+import { compatBackend, findFfmpeg, remuxFmp4ToWebm } from './media/remux.js';
 import { sanitizePlaylistName, parsePlaylistFile, playlistFileName, toJsonPlaylist, toM3u8Playlist } from './fnos/playlist-file.js';
 import { createTransport, transportKindOf } from './transport/index.js';
 import { readStreamBuffer, normalizeDirectAddress, normalizeFnid } from './transport/http.js';
@@ -146,6 +147,7 @@ export class MusicBridge {
   private rev = 0;
   private disposed = false;
   private activeStreams = new Set<IncomingMessage>();
+  private compatStatus: CompatStatus = { backend: 'mse', ffmpeg: false };
   private readonly compatCache = new Map<string, { at: number; buffer: Buffer; contentType: string }>();
   private compatCacheBytes = 0;
   private readonly compatPending = new Map<string, Promise<Result<{ buffer: Buffer; contentType: string }>>>();
@@ -210,6 +212,8 @@ export class MusicBridge {
     this.limiter.setMax(settings.requestConcurrency);
     this.cache.setLimit(settings.cacheLimitMb);
     this.logs.setEnabled(settings.logsEnabled);
+    const backend = compatBackend();
+    this.compatStatus = { backend, ffmpeg: backend === 'ffmpeg' };
     const active = this.vault.activeDevice();
     this.player.setDevice(active?.id ?? null);
     await this.connection.start();
@@ -307,6 +311,7 @@ export class MusicBridge {
       player: this.player.view({ queue: true, limit: 200 }),
       listener: this.vault.activeListener(),
       settings: this.vault.settings,
+      compat: { ...this.compatStatus },
       cache: { ...this.cacheSummary },
       library: this.librarySummary,
       audioClients: this.player.clientsCount(),
@@ -391,6 +396,7 @@ export class MusicBridge {
       library: this.librarySummary,
       cache: { ...this.cacheSummary },
       settings: this.vault.settings,
+      compat: { ...this.compatStatus },
       persistent: this.vault.persistent,
       slowRelay: this.connection.status().slowRelay,
     };
@@ -1903,9 +1909,17 @@ export class MusicBridge {
       if (chunks.ok !== true) return chunks;
       if (signal?.aborted) return fail('cancelled', 'Compatibility conversion was cancelled');
       const fmp4 = Buffer.concat(chunks.data);
-      const webm = await remuxFmp4ToWebm(fmp4, signal);
-      if (webm.ok !== true) return webm;
-      return { ok: true, data: { buffer: webm.data, contentType: 'audio/webm' } };
+      if (fmp4.length === 0) return fail('unsupported', 'Compatibility transcode produced no audio');
+      // ffmpeg is preferred, but its absence or a remux failure must not make
+      // the track unplayable: Chromium can append the same Opus/fMP4 to MSE.
+      if (findFfmpeg() !== undefined) {
+        const webm = await remuxFmp4ToWebm(fmp4, signal);
+        if (webm.ok === true) {
+          return { ok: true, data: { buffer: webm.data, contentType: 'audio/webm' } };
+        }
+      }
+      this.compatStatus = { backend: 'mse', ffmpeg: false };
+      return { ok: true, data: { buffer: fmp4, contentType: 'audio/mp4' } };
     } finally {
       await api.transcodeQuit(guid).catch(() => undefined);
     }

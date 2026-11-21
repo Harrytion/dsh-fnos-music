@@ -219,6 +219,13 @@ export interface LibrarySummary {
   playlists: number;
 }
 
+export type CompatBackend = 'ffmpeg' | 'mse';
+
+export interface CompatStatus {
+  backend: CompatBackend;
+  ffmpeg: boolean;
+}
+
 export interface Snapshot {
   version: 1;
   rev: number;
@@ -228,6 +235,7 @@ export interface Snapshot {
   player: PlayerState;
   listener: ListenerProfile;
   settings: Settings;
+  compat: CompatStatus;
   cache: CacheSummary;
   library: LibrarySummary | null;
   audioClients: number;

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { apply } from '../lib/index.js';
 import { startMockNas, mockTarget, TOKEN } from './mock-nas.mjs';
+import { resetFfmpegCache } from '../lib/media/remux.js';
 
 function call(base, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -167,6 +168,9 @@ test('Host routes and Agent tools work end-to-end against a mock fnOS NAS', asyn
     assert.equal(state.body.devices.length, 1);
     assert.equal(state.body.activeDeviceId, 'mock-device');
     assert.equal(state.body.connection.phase, 'online', JSON.stringify(state.body.connection));
+    assert.ok(state.body.compat);
+    assert.ok(state.body.compat.backend === 'ffmpeg' || state.body.compat.backend === 'mse');
+    assert.equal(state.body.compat.ffmpeg, state.body.compat.backend === 'ffmpeg');
     assert.equal(state.body.devices[0].tokenSet, true);
     assert.equal(Object.hasOwn(state.body.devices[0], 'token'), false);
 
@@ -509,6 +513,18 @@ test('Host routes and Agent tools work end-to-end against a mock fnOS NAS', asyn
     const missingAlbumPlay = await call(dshBase, 'POST', '/fnos-music/player', { action: 'play', album: '' });
     assert.equal(missingAlbumPlay.status, 400);
     assert.equal(missingAlbumPlay.body.error.code, 'bad_request');
+
+    process.env.DSH_FNOS_COMPAT_FORCE_MSE = '1';
+    resetFfmpegCache();
+    try {
+      const mseCompat = await call(dshBase, 'GET', '/fnos-music/compat?guid=track-1');
+      assert.equal(mseCompat.status, 200, JSON.stringify(mseCompat.body));
+      assert.match(String(mseCompat.headers['content-type']), /audio\/mp4/);
+      assert.equal(mseCompat.buffer.toString(), 'fmp4');
+    } finally {
+      delete process.env.DSH_FNOS_COMPAT_FORCE_MSE;
+      resetFfmpegCache();
+    }
 
     const sse = await new Promise((resolve, reject) => {
       const request = http.get(`${dshBase}/fnos-music/events`, (response) => {

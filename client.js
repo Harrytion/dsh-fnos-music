@@ -138,7 +138,11 @@ window.__ModuleLoader__.load({
       audioError: '音频播放失败',
       audioRetry: '重试播放',
       compatLoading: '正在准备兼容音轨…',
-      compatError: '该格式需要兼容转码，请确认 ffmpeg 可用',
+      compatError: '兼容播放失败：ffmpeg 与浏览器 MSE 均不可用',
+      compatBackend: '兼容播放',
+      compatFfmpeg: 'ffmpeg 已启用',
+      compatMse: '未检测到 ffmpeg，使用浏览器 MSE 备用',
+      compatHint: 'DTS/APE 等格式自动选择后端；普通 FLAC/MP3/PCM WAV 仍直连。',
       autoplayBlocked: '浏览器拦截了自动播放，点一下播放按钮即可。',
       claimPlayback: '在此页面播放',
       otherPagePlaying: '另一个页面正在播放',
@@ -486,7 +490,11 @@ window.__ModuleLoader__.load({
       audioError: 'Audio playback failed',
       audioRetry: 'Retry audio',
       compatLoading: 'Preparing compatible audio…',
-      compatError: 'This format needs compatibility transcoding; check ffmpeg.',
+      compatError: 'Compatibility playback failed: ffmpeg and browser MSE are unavailable.',
+      compatBackend: 'Compatibility',
+      compatFfmpeg: 'ffmpeg enabled',
+      compatMse: 'ffmpeg not detected; using browser MSE fallback',
+      compatHint: 'DTS/APE formats pick a backend automatically; FLAC/MP3/PCM WAV stay direct.',
       autoplayBlocked: 'The browser blocked autoplay; press play once.',
       claimPlayback: 'Play in this page',
       otherPagePlaying: 'Another page is playing',
@@ -893,6 +901,10 @@ window.__ModuleLoader__.load({
     let audio = null;
     let audioTrackId = null;
     let audioSource = '';
+    let compatAbort = null;
+    let compatObjectUrl = null;
+    let compatMediaSource = null;
+    let compatGeneration = 0;
     let lastSeekToken = -1;
     let lastProgressAt = 0;
     let progressInFlight = false;
@@ -981,7 +993,7 @@ window.__ModuleLoader__.load({
       });
       audio.addEventListener('error', () => {
         if (!audio || !audioTrackId) return;
-        setStore({ audioError: audioSource.includes('/compat') ? 'compat' : 'audio', compatLoading: false });
+        setStore({ audioError: audioSource === 'compat' ? 'compat' : 'audio', compatLoading: false });
         apiFetch('/player', {
           method: 'POST',
           body: { action: 'error', clientId, message: 'Audio element failed to load the stream' },
@@ -1001,22 +1013,160 @@ window.__ModuleLoader__.load({
       return Number(track.channels) > 2;
     }
 
+    function cleanupCompat() {
+      compatGeneration += 1;
+      if (compatAbort !== null) {
+        try { compatAbort.abort(); } catch { /* already aborted */ }
+        compatAbort = null;
+      }
+      if (compatObjectUrl !== null) {
+        try { URL.revokeObjectURL(compatObjectUrl); } catch { /* already revoked */ }
+        compatObjectUrl = null;
+      }
+      if (compatMediaSource !== null) {
+        try {
+          if (compatMediaSource.readyState === 'open') compatMediaSource.endOfStream();
+        } catch { /* source may already be closed */ }
+        compatMediaSource = null;
+      }
+    }
+
     function audioSourceFor(track) {
       return trackNeedsCompat(track)
-        ? `${API}/compat?guid=${encodeURIComponent(track.id)}`
+        ? 'compat'
         : `${API}/stream?guid=${encodeURIComponent(track.id)}`;
+    }
+
+    function attachCompatMse(buffer, track, generation) {
+      return new Promise((resolve, reject) => {
+        if (typeof MediaSource === 'undefined') {
+          reject(new Error('mse-unavailable'));
+          return;
+        }
+        const mime = 'audio/mp4; codecs="opus"';
+        if (!MediaSource.isTypeSupported(mime)) {
+          reject(new Error('mse-unsupported'));
+          return;
+        }
+        const mediaSource = new MediaSource();
+        compatMediaSource = mediaSource;
+        const objectUrl = URL.createObjectURL(mediaSource);
+        compatObjectUrl = objectUrl;
+        let settled = false;
+        const fail = (error) => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        };
+        mediaSource.addEventListener('sourceopen', () => {
+          if (generation !== compatGeneration) {
+            fail(new Error('stale'));
+            return;
+          }
+          let sourceBuffer;
+          try {
+            sourceBuffer = mediaSource.addSourceBuffer(mime);
+          } catch (error) {
+            fail(error);
+            return;
+          }
+          sourceBuffer.addEventListener('updateend', () => {
+            if (settled) return;
+            settled = true;
+            try { mediaSource.duration = Math.max(1, Number(track.durationSec) || 1); } catch { /* duration is advisory */ }
+            try {
+              if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+            } catch { /* source may already be closed */ }
+            resolve();
+          }, { once: true });
+          sourceBuffer.addEventListener('error', () => fail(new Error('mse-append')), { once: true });
+          try {
+            sourceBuffer.appendBuffer(buffer);
+          } catch (error) {
+            fail(error);
+          }
+        }, { once: true });
+        mediaSource.addEventListener('error', () => fail(new Error('mse-source')), { once: true });
+        const element = ensureAudio();
+        element.src = objectUrl;
+        element.load();
+      });
+    }
+
+    async function loadCompatAudio(track, generation) {
+      const controller = new AbortController();
+      compatAbort = controller;
+      try {
+        const response = await fetch(`${API}/compat?guid=${encodeURIComponent(track.id)}`, {
+          credentials: 'same-origin',
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error('compat-request');
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        const buffer = await response.arrayBuffer();
+        if (generation !== compatGeneration) return;
+        const element = ensureAudio();
+        if (contentType.includes('webm')) {
+          const objectUrl = URL.createObjectURL(new Blob([buffer], { type: 'audio/webm' }));
+          compatObjectUrl = objectUrl;
+          element.src = objectUrl;
+          element.load();
+        } else if (contentType.includes('mp4')) {
+          await attachCompatMse(buffer, track, generation);
+        } else {
+          throw new Error('compat-format');
+        }
+        if (generation !== compatGeneration) return;
+        setStore({ compatLoading: false, audioError: '' });
+        const player = store.snapshot && store.snapshot.player;
+        if (player && player.track && player.track.id === track.id) {
+          if (player.positionMs > 0) {
+            try { element.currentTime = player.positionMs / 1000; } catch { /* applied on loadedmetadata */ }
+          }
+          if (player.status === 'playing') {
+            const started = element.play();
+            if (started && typeof started.catch === 'function') {
+              started.catch(() => setStore({ audioError: 'autoplay' }));
+            }
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted || generation !== compatGeneration) return;
+        setStore({ audioError: 'compat', compatLoading: false });
+      } finally {
+        if (compatAbort === controller) compatAbort = null;
+      }
     }
 
     function setAudioTrack(track) {
       const element = ensureAudio();
-      const source = audioSourceFor(track);
-      if (audioTrackId === track.id && audioSource === source) return element;
+      if (!trackNeedsCompat(track)) {
+        cleanupCompat();
+        const source = audioSourceFor(track);
+        if (audioTrackId === track.id && audioSource === source) return element;
+        audioTrackId = track.id;
+        audioSource = source;
+        element.src = source;
+        element.load();
+        lastSeekToken = -1;
+        setStore({ audioError: '', compatLoading: false });
+        return element;
+      }
+      if (audioTrackId === track.id && audioSource === 'compat') return element;
+      cleanupCompat();
       audioTrackId = track.id;
-      audioSource = source;
-      element.src = source;
-      element.load();
+      audioSource = 'compat';
+      try {
+        element.pause();
+        element.removeAttribute('src');
+        element.load();
+      } catch {
+        // The element may already be detached.
+      }
       lastSeekToken = -1;
-      setStore({ audioError: '', compatLoading: trackNeedsCompat(track) });
+      setStore({ audioError: '', compatLoading: true });
+      const generation = compatGeneration;
+      void loadCompatAudio(track, generation);
       return element;
     }
 
@@ -1031,6 +1181,8 @@ window.__ModuleLoader__.load({
     }
 
     function stopAudio() {
+      cleanupCompat();
+      setStore({ compatLoading: false });
       if (audio !== null) {
         try {
           audio.pause();
@@ -1077,7 +1229,7 @@ window.__ModuleLoader__.load({
       element.volume = player.muted ? 0 : Math.max(0, Math.min(1, player.volume / 100));
       element.muted = player.muted;
       if (store.audioError !== '' && player.status === 'playing' && !element.paused) setStore({ audioError: '' });
-      if (player.status === 'playing') {
+      if (player.status === 'playing' && !store.compatLoading) {
         const started = element.play();
         if (started && typeof started.catch === 'function') {
           started.catch(() => {
@@ -1138,10 +1290,17 @@ window.__ModuleLoader__.load({
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
       const playable = await hydrateTrack(track);
+      if (store.audioError === 'compat' && trackNeedsCompat(playable)) {
+        audioTrackId = null;
+        audioSource = '';
+        cleanupCompat();
+      }
       const element = setAudioTrack(playable);
-      const started = element.play();
-      if (started && typeof started.catch === 'function') {
-        started.catch(() => setStore({ audioError: 'autoplay' }));
+      if (!store.compatLoading) {
+        const started = element.play();
+        if (started && typeof started.catch === 'function') {
+          started.catch(() => setStore({ audioError: 'autoplay' }));
+        }
       }
       await postPlayer({ action: 'play', trackId: track.id });
     }
@@ -1160,7 +1319,16 @@ window.__ModuleLoader__.load({
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
       const playable = await hydrateTrack(player.track);
+      if (store.audioError === 'compat' && trackNeedsCompat(playable)) {
+        audioTrackId = null;
+        audioSource = '';
+        cleanupCompat();
+      }
       const element = setAudioTrack(playable);
+      if (store.compatLoading) {
+        await postPlayer({ action: player.status === 'playing' ? 'pause' : 'resume' });
+        return;
+      }
       if (player.status === 'playing' && !element.paused) {
         element.pause();
         await postPlayer({ action: 'pause' });
@@ -2773,6 +2941,9 @@ window.__ModuleLoader__.load({
           h('label', { className: 'fnm-check' },
             h('input', { type: 'checkbox', checked: Boolean(draft.logsEnabled), onChange: (event) => setDraft({ ...draft, logsEnabled: event.target.checked }) }),
             h('span', null, t('logs'))),
+          h('div', { className: 'fnm-section-label' }, t('compatBackend')),
+          h('div', { className: 'fnm-help' }, snapshot.compat && snapshot.compat.backend === 'ffmpeg' ? t('compatFfmpeg') : t('compatMse')),
+          h('small', { className: 'fnm-help' }, t('compatHint')),
           h('div', { className: 'fnm-section-label' }, t('playbackSettings')),
           h('label', { className: 'fnm-check' },
             h('input', { type: 'checkbox', checked: Boolean(draft.floatingPlayer), onChange: (event) => setDraft({ ...draft, floatingPlayer: event.target.checked }) }),
