@@ -282,3 +282,20 @@ test('vault manages local listener profiles while protecting the last one', asyn
   assert.equal(vault.listeners.length, 8);
   await assert.rejects(() => vault.createListener('overflow'), /At most/i);
 });
+
+test('appendQueue preserves the current track; empty-queue playback is handled by the caller', () => {
+  const player = new PlayerService();
+  player.setDevice('device-1');
+  player.replaceQueue([track('a'), track('b')]);
+  player.playTrack('a');
+  const before = player.raw().track.id;
+  const appended = player.appendQueue([track('c')]);
+  assert.equal(appended.track.id, before);
+  assert.deepEqual(player.raw().queue.map((item) => item.id), ['a', 'b', 'c']);
+
+  const empty = new PlayerService();
+  empty.setDevice('device-2');
+  const first = empty.appendQueue([track('z')]);
+  assert.equal(first.track.id, 'z');
+  assert.equal(first.queueTotal, 1);
+});

@@ -905,6 +905,7 @@ window.__ModuleLoader__.load({
     let compatObjectUrl = null;
     let compatMediaSource = null;
     let compatGeneration = 0;
+    let lastOpen = { id: '', at: 0 };
     let lastSeekToken = -1;
     let lastProgressAt = 0;
     let progressInFlight = false;
@@ -1303,6 +1304,20 @@ window.__ModuleLoader__.load({
         }
       }
       await postPlayer({ action: 'play', trackId: track.id });
+    }
+
+    async function openTrack(track) {
+      if (!track) return;
+      const now = Date.now();
+      if (lastOpen.id === track.id && now - lastOpen.at < 500) return;
+      lastOpen = { id: track.id, at: now };
+      const player = store.snapshot && store.snapshot.player;
+      if (player && player.track) {
+        if (player.track.id === track.id) return;
+        await addToQueue(track);
+        return;
+      }
+      await playTrackNow(track);
     }
 
     async function playCollection(kind, id) {
@@ -3176,13 +3191,13 @@ window.__ModuleLoader__.load({
           }) : null,
           tab === 'search' ? h(SearchTab, {
             t,
-            onPlayTrack: (track) => void playTrackNow(track),
+            onPlayTrack: (track) => void openTrack(track),
             onToggleLike: (track) => void toggleFavorite(track),
           }) : null,
           tab === 'playlists' ? h(PlaylistsTab, {
             t,
             confirm,
-            onPlayTrack: (track) => void playTrackNow(track),
+            onPlayTrack: (track) => void openTrack(track),
             onToggleLike: (track) => void toggleFavorite(track),
           }) : null,
           tab === 'settings' ? h(SettingsTab, { t, snapshot, confirm }) : null,
@@ -3353,7 +3368,6 @@ window.__ModuleLoader__.load({
         className: `fnm-song-row${active ? ' is-current' : ''}${selected ? ' is-selected' : ''}`,
         role: 'row',
         onClick: onRow,
-        onDoubleClick: onRow,
         onContextMenu: (event) => {
           event.preventDefault();
           props.onContext(track, event);
@@ -3567,7 +3581,7 @@ window.__ModuleLoader__.load({
             key: entry.id,
             type: 'button',
             className: 'fnm-recent-row',
-            onClick: () => void playTrackNow(historyToTrack(entry)),
+            onClick: () => void openTrack(historyToTrack(entry)),
           },
             h(Cover, { coverId: entry.coverId, size: 38, alt: entry.title }),
             h('span', { className: 'fnm-recent-text' }, h('span', { className: 'fnm-recent-title' }, entry.title), h('span', { className: 'fnm-recent-sub' }, entry.artist)),
@@ -3578,7 +3592,7 @@ window.__ModuleLoader__.load({
           h(SectionHead, { t, title: t('homeForYou'), actionLabel: t('viewAll'), onAction: () => props.navigate({ name: 'songs' }) }),
           recommended.length > 0 ? h('div', { className: 'fnm-media-grid' }, recommended.slice(0, 6).map((track) => h(MediaCard, {
             key: track.id, t, title: track.title, sub: track.artist, coverId: track.coverId,
-            onOpen: () => void playTrackNow(track), onPlay: () => void playTrackNow(track),
+            onOpen: () => void openTrack(track), onPlay: () => void playTrackNow(track),
           }))) : h('p', { className: 'fnm-muted' }, t('noResults')),
         ),
         latestAlbums.length > 0 ? h('section', { className: 'fnm-v3-section' },
@@ -3635,7 +3649,7 @@ window.__ModuleLoader__.load({
           selected: selection.selected, selectable: true,
           onSelect: (id, index, event) => selection.toggle(id, index, event, paged.items.map((track) => track.id)),
           onSelectAll: selection.selectAll, onClearSelection: selection.clear,
-          activeId, onPlay: (track) => void playTrackNow(track), onLike: (track) => void toggleFavorite(track),
+          activeId, onPlay: (track) => void openTrack(track), onLike: (track) => void toggleFavorite(track),
           onContext: props.onContext,
           hasMore: paged.hasMore, loadingMore: paged.loadingMore, onLoadMore: paged.loadMore,
           emptyTitle: t('libraryEmpty'),
@@ -3692,7 +3706,7 @@ window.__ModuleLoader__.load({
           selected: selection.selected, selectable: true,
           onSelect: (id, index, event) => selection.toggle(id, index, event, paged.items.map((track) => track.id)),
           onSelectAll: selection.selectAll, onClearSelection: selection.clear,
-          onPlay: (track) => void playTrackNow(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
+          onPlay: (track) => void openTrack(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
           hasMore: paged.hasMore, loadingMore: paged.loadingMore, onLoadMore: paged.loadMore,
         }),
         h(TrackActionBar, { t, selectedIds: selection.ids, onClear: selection.clear }),
@@ -3710,7 +3724,7 @@ window.__ModuleLoader__.load({
           selected: selection.selected, selectable: true,
           onSelect: (id, index, event) => selection.toggle(id, index, event, paged.items.map((track) => track.id)),
           onSelectAll: selection.selectAll, onClearSelection: selection.clear,
-          onPlay: (track) => void playTrackNow(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
+          onPlay: (track) => void openTrack(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
           hasMore: paged.hasMore, loadingMore: paged.loadingMore, onLoadMore: paged.loadMore,
           emptyTitle: t('likedEmpty'),
         }),
@@ -3746,7 +3760,7 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'fnm-empty' }, h(Icon, { name: 'music', size: 26 }), h('div', { className: 'fnm-empty-title' }, t('historyEmpty')))
           : h('div', { className: 'fnm-history-list' }, paged.items.map((entry) => h('button', {
             key: entry.id, type: 'button', className: 'fnm-history-row',
-            onClick: () => void playTrackNow(historyToTrack(entry)),
+            onClick: () => void openTrack(historyToTrack(entry)),
           },
             h(Cover, { coverId: entry.coverId, size: 40, alt: entry.title }),
             h('span', { className: 'fnm-history-main' }, h('span', { className: 'fnm-history-title' }, entry.title), h('span', { className: 'fnm-history-sub' }, `${entry.artist}${entry.album ? ` · ${entry.album}` : ''}`)),
@@ -3781,7 +3795,7 @@ window.__ModuleLoader__.load({
         ),
         h(SongTable, {
           t, items: tracks, activeId: props.snapshot.player.track ? props.snapshot.player.track.id : '',
-          onPlay: (track) => void playTrackNow(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
+          onPlay: (track) => void openTrack(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
           emptyTitle: t('albumEmpty'),
         }),
       );
@@ -3813,7 +3827,7 @@ window.__ModuleLoader__.load({
         ),
         h(SongTable, {
           t, items: tracks, activeId: props.snapshot.player.track ? props.snapshot.player.track.id : '',
-          onPlay: (track) => void playTrackNow(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
+          onPlay: (track) => void openTrack(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
         }),
         albums.length > 0 ? h('section', { className: 'fnm-v3-section' },
           h(SectionHead, { t, title: t('albums') }),
@@ -3872,7 +3886,7 @@ window.__ModuleLoader__.load({
             selected: selection.selected, selectable: true,
             onSelect: (id, index, event) => selection.toggle(id, index, event, data.tracks.map((track) => track.id)),
             onSelectAll: selection.selectAll, onClearSelection: selection.clear,
-            onPlay: (track) => void playTrackNow(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
+            onPlay: (track) => void openTrack(track), onLike: (track) => void toggleFavorite(track), onContext: props.onContext,
           }),
           h(TrackActionBar, { t, selectedIds: selection.ids, onClear: selection.clear }),
         ) : null,
@@ -4029,7 +4043,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'fnm-hour-grid' }, hourly.map((plays, hour) => h('div', { key: hour, className: 'fnm-hour-cell', title: `${hour}:00 · ${plays}`, style: { opacity: 0.25 + (plays / maxHour) * 0.75 } }, h('span', null, String(hour).padStart(2, '0'))))),
           ),
           h('div', { className: 'fnm-stat-columns' },
-            h(StatList, { t, title: t('topTracks'), items: data.topTracks, onPlay: (item) => void playTrackNow({ id: item.key, title: item.label, artist: item.sub || '', album: '', coverId: '', durationSec: 0, favorite: false, quality: 'standard', genre: '', year: 0, albumId: '', trackNo: 0, discNo: 0 }) }),
+            h(StatList, { t, title: t('topTracks'), items: data.topTracks, onPlay: (item) => void openTrack({ id: item.key, title: item.label, artist: item.sub || '', album: '', coverId: '', durationSec: 0, favorite: false, quality: 'standard', genre: '', year: 0, albumId: '', trackNo: 0, discNo: 0 }) }),
             h(StatList, { t, title: t('topArtists'), items: data.topArtists, onPlay: (item) => props.navigate({ name: 'artist', artistName: item.label }) }),
             h(StatList, { t, title: t('topAlbums'), items: data.topAlbums }),
             h(StatList, { t, title: t('topGenres'), items: data.topGenres }),
@@ -4624,7 +4638,7 @@ window.__ModuleLoader__.load({
         if (effective.name === 'playlists') return h(PlaylistsTab, {
           t, confirm,
           initialPlaylistId: effective.openId || '',
-          onPlayTrack: (track) => void playTrackNow(track),
+          onPlayTrack: (track) => void openTrack(track),
           onToggleLike: (track) => void toggleFavorite(track),
         });
         return h(HomeView, { t, snapshot, navigate, onContext: openContext });

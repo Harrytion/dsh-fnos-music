@@ -843,7 +843,13 @@ export class MusicBridge {
     let tracks: TrackRef[] = [];
     if (action === 'add' || action === 'insert') {
       if (ids.length > 0) {
-        tracks = ids.map((id) => this.player.raw().queue.find((track) => track.id === id) ?? this.library.findTrack(id))
+        const resolved = await Promise.all(ids.map(async (id) => {
+          const found = this.player.raw().queue.find((track) => track.id === id)
+            ?? this.library.findTrack(id)
+            ?? this.history.findTrack(id);
+          return found === undefined ? undefined : this.enrichTrack(found);
+        }));
+        tracks = resolved
           .filter((track): track is TrackRef => track !== undefined)
           .map((track) => ({ ...track }));
       }

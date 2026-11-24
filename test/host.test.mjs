@@ -526,6 +526,18 @@ test('Host routes and Agent tools work end-to-end against a mock fnOS NAS', asyn
       resetFfmpegCache();
     }
 
+    // After the library cache is cleared, a history snapshot is still enough
+    // to enqueue a track (used by click-to-queue and history rows).
+    const clearViaSwitch = await call(dshBase, 'POST', '/fnos-music/devices/switch', { id: 'mock-device' });
+    assert.equal(clearViaSwitch.body.ok, true, JSON.stringify(clearViaSwitch.body));
+    const historyQueue = await call(dshBase, 'POST', '/fnos-music/queue', { action: 'add', trackIds: ['track-1'] });
+    assert.equal(historyQueue.status, 200, JSON.stringify(historyQueue.body));
+    assert.equal(historyQueue.body.ok, true);
+    assert.equal(historyQueue.body.queueTotal, 1);
+    assert.equal(historyQueue.body.queue[0].id, 'track-1');
+    assert.equal(historyQueue.body.queue[0].codec, 'flac');
+    assert.equal(historyQueue.body.queue[0].channels, 2);
+
     const sse = await new Promise((resolve, reject) => {
       const request = http.get(`${dshBase}/fnos-music/events`, (response) => {
         let data = '';
