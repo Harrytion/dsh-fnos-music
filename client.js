@@ -136,6 +136,7 @@ window.__ModuleLoader__.load({
       slowRelayHint: 'FNID 中继延迟偏高，大曲库/无损播放可能卡顿。',
       largeLibraryHint: '曲库较大，已启用分页加载。',
       audioError: '音频播放失败',
+      streamUnavailable: '曲目暂时无法播放，请稍后重试或选择其他歌曲。',
       audioRetry: '重试播放',
       compatLoading: '正在准备兼容音轨…',
       compatError: '兼容播放失败：ffmpeg 与浏览器 MSE 均不可用',
@@ -490,6 +491,7 @@ window.__ModuleLoader__.load({
       slowRelayHint: 'The FNID relay is slow; large libraries or lossless playback may stutter.',
       largeLibraryHint: 'Large library; paging is enabled.',
       audioError: 'Audio playback failed',
+      streamUnavailable: 'This track is temporarily unavailable. Try again or pick another song.',
       audioRetry: 'Retry audio',
       compatLoading: 'Preparing compatible audio…',
       compatError: 'Compatibility playback failed: ffmpeg and browser MSE are unavailable.',
@@ -810,6 +812,21 @@ window.__ModuleLoader__.load({
     }
     const clientId = makeClientId();
 
+    function httpError(response, data) {
+      const error = new Error(
+        data && data.error && data.error.message
+          ? data.error.message
+          : `HTTP ${response.status}`,
+      );
+      error.code = data && data.error && data.error.code
+        ? data.error.code
+        : response.status === 404 ? 'not_found' : response.status === 405 ? 'method_not_allowed' : 'http';
+      error.status = response.status;
+      error.hint = data && data.error ? data.error.hint : undefined;
+      error.confirmToken = data && data.error ? data.error.confirmToken : undefined;
+      return error;
+    }
+
     async function apiFetch(path, options) {
       const settings = options || {};
       let response;
@@ -827,20 +844,20 @@ window.__ModuleLoader__.load({
         throw error;
       }
       let data = null;
+      let malformed = false;
       try {
         data = await response.json();
       } catch {
+        malformed = true;
+      }
+      if (!response.ok) throw httpError(response, data);
+      if (malformed) {
         const error = new Error('protocol');
         error.code = 'protocol';
+        error.status = response.status;
         throw error;
       }
-      if (data && data.ok === false) {
-        const error = new Error(data.error && data.error.message ? data.error.message : 'failed');
-        error.code = data.error ? data.error.code : 'unknown';
-        error.hint = data.error ? data.error.hint : undefined;
-        error.confirmToken = data.error ? data.error.confirmToken : undefined;
-        throw error;
-      }
+      if (data && data.ok === false) throw httpError(response, data);
       return data;
     }
 
@@ -905,6 +922,7 @@ window.__ModuleLoader__.load({
     let audio = null;
     let audioTrackId = null;
     let audioSource = '';
+    let failedTrackId = null;
     let compatAbort = null;
     let compatObjectUrl = null;
     let compatMediaSource = null;
@@ -997,14 +1015,42 @@ window.__ModuleLoader__.load({
         apiFetch('/player', { method: 'POST', body: { action: 'ended', clientId } }).catch(() => {});
       });
       audio.addEventListener('error', () => {
-        if (!audio || !audioTrackId) return;
-        setStore({ audioError: audioSource === 'compat' ? 'compat' : 'audio', compatLoading: false });
-        apiFetch('/player', {
-          method: 'POST',
-          body: { action: 'error', clientId, message: 'Audio element failed to load the stream' },
-        }).catch(() => {});
+        handleAudioFailure();
       });
       return audio;
+    }
+
+    function clearAudioSource() {
+      if (audio === null) return;
+      try {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+      } catch {
+        // The element may already be detached.
+      }
+    }
+
+    function handleAudioFailure() {
+      if (!audio || !audioTrackId) return;
+      const failedId = audioTrackId;
+      if (failedTrackId === failedId && store.audioError === 'stream') return;
+      const wasCompat = audioSource === 'compat';
+      failedTrackId = failedId;
+      audioTrackId = null;
+      audioSource = '';
+      if (wasCompat) cleanupCompat();
+      clearAudioSource();
+      setStore({ audioError: wasCompat ? 'compat' : 'stream', compatLoading: false });
+      apiFetch('/player', {
+        method: 'POST',
+        body: { action: 'error', clientId, message: 'Audio element failed to load the stream' },
+      }).catch(() => {});
+      if (!wasCompat) {
+        setTimeout(() => {
+          void refreshState();
+        }, 500);
+      }
     }
 
     const COMPAT_CODECS = new Set(['dts', 'dtshd', 'dts-hd', 'ac3', 'eac3', 'truehd', 'ape', 'alac', 'dsd', 'wma', 'wmapro', 'tta', 'wv']);
@@ -1145,6 +1191,8 @@ window.__ModuleLoader__.load({
 
     function setAudioTrack(track) {
       const element = ensureAudio();
+      if (failedTrackId !== null && failedTrackId !== track.id) failedTrackId = null;
+      if (failedTrackId === track.id) return element;
       if (!trackNeedsCompat(track)) {
         cleanupCompat();
         const source = audioSourceFor(track);
@@ -1188,18 +1236,11 @@ window.__ModuleLoader__.load({
     function stopAudio() {
       cleanupCompat();
       setStore({ compatLoading: false });
-      if (audio !== null) {
-        try {
-          audio.pause();
-          audio.removeAttribute('src');
-          audio.load();
-        } catch {
-          // The element may already be detached.
-        }
-      }
+      clearAudioSource();
       audio = null;
       audioTrackId = null;
       audioSource = '';
+      failedTrackId = null;
       lastSeekToken = -1;
     }
 
@@ -1218,8 +1259,10 @@ window.__ModuleLoader__.load({
         return;
       }
       if (!player.track) {
-        if (audio !== null && !audio.paused) audio.pause();
+        clearAudioSource();
         audioTrackId = null;
+        audioSource = '';
+        failedTrackId = null;
         return;
       }
       const element = setAudioTrack(player.track);
@@ -1234,6 +1277,10 @@ window.__ModuleLoader__.load({
       element.volume = player.muted ? 0 : Math.max(0, Math.min(1, player.volume / 100));
       element.muted = player.muted;
       if (store.audioError !== '' && player.status === 'playing' && !element.paused) setStore({ audioError: '' });
+      if (store.audioError === 'stream' && failedTrackId === player.track.id) {
+        if (!element.paused) element.pause();
+        return;
+      }
       if (player.status === 'playing' && !store.compatLoading) {
         const started = element.play();
         if (started && typeof started.catch === 'function') {
@@ -1274,9 +1321,20 @@ window.__ModuleLoader__.load({
     }
 
     async function postPlayer(body) {
+      const send = () => apiFetch('/player', { method: 'POST', body: { clientId, ...body } });
       try {
-        return await apiFetch('/player', { method: 'POST', body: { clientId, ...body } });
+        return await send();
       } catch (error) {
+        const transient = error && (error.status === 404 || error.status === 405);
+        if (transient) {
+          await new Promise((resolve) => { setTimeout(resolve, 500); });
+          try {
+            return await send();
+          } catch (second) {
+            showError(translate, second);
+            return null;
+          }
+        }
         showError(translate, error);
         return null;
       }
@@ -1284,6 +1342,7 @@ window.__ModuleLoader__.load({
 
     async function playQueueTrack(track) {
       if (!track) return;
+      failedTrackId = null;
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
       const data = await postPlayer({ action: 'playTrack', trackId: track.id });
@@ -1295,6 +1354,7 @@ window.__ModuleLoader__.load({
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
       const playable = await hydrateTrack(track);
+      failedTrackId = null;
       if (store.audioError === 'compat' && trackNeedsCompat(playable)) {
         audioTrackId = null;
         audioSource = '';
@@ -1338,6 +1398,7 @@ window.__ModuleLoader__.load({
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
       const playable = await hydrateTrack(player.track);
+      failedTrackId = null;
       if (store.audioError === 'compat' && trackNeedsCompat(playable)) {
         audioTrackId = null;
         audioSource = '';
@@ -1464,6 +1525,12 @@ window.__ModuleLoader__.load({
     let events = null;
     let pollTimer = null;
     let heartbeatTimer = null;
+    let eventsRetryTimer = null;
+    let eventsRetryDelay = 1000;
+    let stateRetryTimer = null;
+    let stateRetryDelay = 1000;
+    let stateErrorShown = false;
+    let disposed = false;
 
     function stopPolling() {
       if (pollTimer !== null) {
@@ -1480,17 +1547,52 @@ window.__ModuleLoader__.load({
       pollTimer.unref?.();
     }
 
+    function scheduleEventsRetry() {
+      if (disposed || events !== null || eventsRetryTimer !== null) return;
+      const delay = eventsRetryDelay;
+      eventsRetryDelay = Math.min(30000, eventsRetryDelay * 2);
+      eventsRetryTimer = setTimeout(() => {
+        eventsRetryTimer = null;
+        startEvents();
+      }, delay);
+    }
+
+    function scheduleStateRetry() {
+      if (disposed || stateRetryTimer !== null) return;
+      const delay = stateRetryDelay;
+      stateRetryDelay = Math.min(30000, stateRetryDelay * 2);
+      stateRetryTimer = setTimeout(() => {
+        stateRetryTimer = null;
+        void refreshState();
+      }, delay);
+    }
+
     async function refreshState() {
       try {
         const snapshot = await apiFetch('/state');
+        if (disposed) return;
+        stateRetryDelay = 1000;
+        stateErrorShown = false;
+        if (stateRetryTimer !== null) {
+          clearTimeout(stateRetryTimer);
+          stateRetryTimer = null;
+        }
         setStore({ loadError: '' });
         applySnapshot(snapshot);
+        if (events === null && store.sse !== 'open') scheduleEventsRetry();
       } catch (error) {
+        if (disposed) return;
         setStore({
           sse: 'error',
           ...(store.snapshot === null ? { loadError: errorText(translate, error) } : {}),
         });
-        if (store.snapshot === null) showError(translate, error);
+        if (store.snapshot === null) {
+          if (!stateErrorShown) {
+            stateErrorShown = true;
+            showError(translate, error);
+          }
+          scheduleStateRetry();
+        }
       }
     }
 
@@ -1597,40 +1699,56 @@ window.__ModuleLoader__.load({
     }
 
     function startEvents() {
-      if (events !== null) return;
+      if (disposed || events !== null) return;
+      if (eventsRetryTimer !== null) {
+        clearTimeout(eventsRetryTimer);
+        eventsRetryTimer = null;
+      }
+      let source = null;
       try {
-        events = new EventSource(`${API}/events`);
+        source = new EventSource(`${API}/events`);
       } catch {
         startPolling();
+        scheduleEventsRetry();
         return;
       }
-      events.onopen = () => {
+      events = source;
+      source.onopen = () => {
+        if (events !== source) return;
+        eventsRetryDelay = 1000;
         stopPolling();
         setStore({ sse: 'open' });
+        void refreshState();
       };
-      events.onmessage = (event) => {
+      source.onmessage = (event) => {
         try {
           applyEvent(JSON.parse(event.data));
         } catch {
           // Ignore a malformed event; the next snapshot wins.
         }
       };
-      events.onerror = () => {
+      source.onerror = () => {
+        if (events !== source) return;
         setStore({ sse: 'reconnecting' });
-        if (events !== null && events.readyState === EventSource.CLOSED) {
-          try {
-            events.close();
-          } catch {
-            // Already closed.
-          }
-          events = null;
-          startPolling();
+        if (source.readyState !== EventSource.CLOSED) return;
+        try {
+          source.close();
+        } catch {
+          // Already closed.
         }
+        events = null;
+        startPolling();
+        scheduleEventsRetry();
       };
     }
 
     function stopEvents() {
       stopPolling();
+      if (eventsRetryTimer !== null) {
+        clearTimeout(eventsRetryTimer);
+        eventsRetryTimer = null;
+      }
+      eventsRetryDelay = 1000;
       if (events !== null) {
         try {
           events.close();
@@ -1945,7 +2063,7 @@ window.__ModuleLoader__.load({
           ) : null,
           compatLoading ? h('span', { className: 'fnm-hintline' }, t('compatLoading')) : null,
           audioError ? h('span', { className: 'fnm-hintline fnm-errorline' },
-            audioError === 'autoplay' ? t('autoplayBlocked') : audioError === 'compat' ? t('compatError') : t('audioError'),
+            audioError === 'autoplay' ? t('autoplayBlocked') : audioError === 'compat' ? t('compatError') : audioError === 'stream' ? t('streamUnavailable') : t('audioError'),
             h('button', { type: 'button', className: 'fnm-link', onClick: props.onPlayPause }, t('audioRetry')),
           ) : null,
         ),
@@ -5956,11 +6074,16 @@ window.__ModuleLoader__.load({
           void heartbeat();
         }, 10000);
         return () => {
+          disposed = true;
           if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
             window.removeEventListener('pagehide', onPageHide);
             window.removeEventListener('keydown', onKeyDown);
           }
           stopEvents();
+          if (stateRetryTimer !== null) {
+            clearTimeout(stateRetryTimer);
+            stateRetryTimer = null;
+          }
           if (heartbeatTimer !== null) {
             clearInterval(heartbeatTimer);
             heartbeatTimer = null;

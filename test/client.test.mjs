@@ -91,3 +91,15 @@ test('client module exposes the three DSH slot registrations and cleans up', asy
   }
   for (const dispose of disposers.reverse()) dispose();
 });
+
+test('client ships recovery paths for stream, route-gap, and SSE failures', async () => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const source = await fs.readFile(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'client.js'), 'utf8');
+  assert.match(source, /failedTrackId/);
+  assert.match(source, /streamUnavailable/);
+  assert.match(source, /scheduleEventsRetry/);
+  assert.match(source, /scheduleStateRetry/);
+  assert.match(source, /error\.status === 404/);
+  assert.match(source, /error\.status === 405/);
+});

@@ -343,6 +343,11 @@ export function startMockNas() {
       return;
     }
     if (path === `${API}/track/stream`) {
+      const guid = new URL(String(request.url ?? '/'), 'http://127.0.0.1').searchParams.get('guid');
+      if (guid === 'missing') {
+        send(404, '', {});
+        return;
+      }
       const range = String(request.headers.range ?? '');
       const match = /^bytes=(\d+)-(\d*)$/.exec(range);
       if (match === null) {

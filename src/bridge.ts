@@ -2034,6 +2034,7 @@ export class MusicBridge {
     });
     if (result.ok !== true) {
       this.log({ at: Date.now(), kind: 'error', code: result.error.code, trackId: id, message: result.error.message });
+      if (result.error.status === 404) return fail('not_found', 'Track stream not found', { status: 404 });
       return result;
     }
     this.activeStreams.add(result.data.stream);

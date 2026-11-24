@@ -376,6 +376,9 @@ test('Host routes and Agent tools work end-to-end against a mock fnOS NAS', asyn
     assert.equal(stream.headers['content-range'], 'bytes 0-9/1644');
     assert.equal(stream.buffer.length, 10);
 
+    const missingStream = await call(dshBase, 'GET', '/fnos-music/stream?guid=missing');
+    assert.equal(missingStream.status, 404, JSON.stringify(missingStream.body));
+
     const favorite = await call(dshBase, 'POST', '/fnos-music/favorite', { action: 'add', trackId: 'track-1' });
     assert.equal(favorite.body.ok, true, JSON.stringify(favorite.body));
     assert.equal(favorite.body.changed, 1);
