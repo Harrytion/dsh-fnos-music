@@ -242,7 +242,7 @@ export function createTools(bridge: MusicBridge): HostToolDefinition[] {
     {
       name: 'fnos_music_play',
       description:
-        'Play a track, a search query, a playlist, or an album from the active fnOS device, replacing or extending the shared queue. Use fnos_music_search first when the track id is unknown. Audio plays in a connected DSH page; browser-incompatible formats such as DTS WAV and APE are automatically transcoded via fnOS; local ffmpeg is used when present, otherwise the client falls back to browser MSE.',
+        'Play a track, a search query, a playlist, or an album from the active fnOS device, replacing or extending the shared queue. Append/next modes deduplicate by track id. Use fnos_music_search first when the track id is unknown. Audio plays in a connected DSH page; browser-incompatible formats such as DTS WAV and APE are automatically transcoded via fnOS; local ffmpeg is used when present, otherwise the client falls back to browser MSE.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -261,6 +261,8 @@ export function createTools(bridge: MusicBridge): HostToolDefinition[] {
           action: { type: 'string' },
           played: { type: 'object', additionalProperties: true },
           added: { type: 'integer' },
+          skipped: { type: 'integer' },
+          skippedIds: { type: 'array', items: { type: 'string' } },
           queueLength: { type: 'integer' },
           queueIndex: { type: 'integer' },
           mode: { type: 'string' },
@@ -309,7 +311,7 @@ export function createTools(bridge: MusicBridge): HostToolDefinition[] {
     {
       name: 'fnos_music_queue',
       description:
-        'Read or edit the shared playback queue: get a page, append, insert, remove, clear, or move tracks. Track ids come from search. Removing and clearing are immediate; this tool is not the high-risk favorite/playlist deletion path.',
+        'Read or edit the shared playback queue: get a page, append, insert, remove, clear, or move tracks. Add/insert deduplicate by track id: existing songs are skipped and reported in added/skipped/skippedIds. Track ids come from search. Removing and clearing are immediate; this tool is not the high-risk favorite/playlist deletion path.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -331,6 +333,10 @@ export function createTools(bridge: MusicBridge): HostToolDefinition[] {
           queueTotal: { type: 'integer' },
           queueRevision: { type: 'integer' },
           currentIndex: { type: 'integer' },
+          added: { type: 'integer' },
+          skipped: { type: 'integer' },
+          skippedIds: { type: 'array', items: { type: 'string' } },
+          duplicateIds: { type: 'array', items: { type: 'string' } },
           hasMore: { type: 'boolean' },
         }),
         render: (_args, value) => render(value),

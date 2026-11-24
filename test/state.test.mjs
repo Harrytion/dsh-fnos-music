@@ -299,3 +299,33 @@ test('appendQueue preserves the current track; empty-queue playback is handled b
   assert.equal(first.track.id, 'z');
   assert.equal(first.queueTotal, 1);
 });
+
+test('queue add deduplicates existing and within-batch ids atomically', () => {
+  const player = new PlayerService();
+  player.setDevice('device-1');
+  player.replaceQueue([track('a'), track('b')]);
+  const beforeRevision = player.queueRevision;
+  const result = player.appendQueueUnique([track('b'), track('c'), track('c')]);
+  assert.equal(result.added, 1);
+  assert.equal(result.skipped, 2);
+  assert.deepEqual(result.duplicateIds, ['b', 'c']);
+  assert.deepEqual(player.raw().queue.map((item) => item.id), ['a', 'b', 'c']);
+  assert.ok(player.queueRevision > beforeRevision);
+
+  const revision = player.queueRevision;
+  const duplicateOnly = player.appendQueueUnique([track('a'), track('c')]);
+  assert.equal(duplicateOnly.added, 0);
+  assert.equal(duplicateOnly.skipped, 2);
+  assert.equal(player.queueRevision, revision);
+  assert.deepEqual(player.raw().queue.map((item) => item.id), ['a', 'b', 'c']);
+});
+
+test('queue insert deduplicates without moving an existing track', () => {
+  const player = new PlayerService();
+  player.setDevice('device-1');
+  player.replaceQueue([track('a'), track('b')]);
+  const result = player.insertQueueUnique([track('b'), track('c')], 1);
+  assert.equal(result.added, 1);
+  assert.equal(result.skipped, 1);
+  assert.deepEqual(player.raw().queue.map((item) => item.id), ['a', 'c', 'b']);
+});

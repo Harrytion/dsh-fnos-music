@@ -12,6 +12,14 @@ import { fail } from '../errors.js';
 const MAX_QUEUE = 2000;
 const CLIENT_TTL_MS = 25_000;
 
+export interface QueueMutationResult {
+  state: PlayerState;
+  added: number;
+  skipped: number;
+  skippedIds: string[];
+  duplicateIds: string[];
+}
+
 export interface PlayerDeps {
   rng?: () => number;
   onChange?: (state: PlayerState) => void;
@@ -240,6 +248,89 @@ export class PlayerService {
     return this.view();
   }
 
+  /** Append only ids not already in the queue; atomic against concurrent callers. */
+  appendQueueUnique(tracks: TrackRef[], mode?: PlayMode): QueueMutationResult {
+    const existing = new Set(this.state.queue.map((track) => track.id));
+    const unique: TrackRef[] = [];
+    const skippedIds: string[] = [];
+    const duplicateIds: string[] = [];
+    for (const track of tracks) {
+      if (existing.has(track.id)) {
+        skippedIds.push(track.id);
+        duplicateIds.push(track.id);
+        continue;
+      }
+      existing.add(track.id);
+      unique.push({ ...track });
+    }
+    const room = Math.max(0, MAX_QUEUE - this.state.queue.length);
+    const accepted = unique.slice(0, room);
+    for (const track of unique.slice(room)) skippedIds.push(track.id);
+    if (accepted.length === 0) {
+      return {
+        state: this.view(),
+        added: 0,
+        skipped: skippedIds.length,
+        skippedIds: skippedIds.slice(0, 50),
+        duplicateIds: duplicateIds.slice(0, 50),
+      };
+    }
+    this.state.queue = this.state.queue.concat(accepted);
+    if (mode !== undefined) this.state.mode = mode;
+    this.rebuildOrder(true);
+    if (this.state.track === null) this.startAtFirst();
+    this.emit(true);
+    return {
+      state: this.view(),
+      added: accepted.length,
+      skipped: skippedIds.length,
+      skippedIds: skippedIds.slice(0, 50),
+      duplicateIds: duplicateIds.slice(0, 50),
+    };
+  }
+
+  /** Insert only ids not already in the queue; never moves an existing track. */
+  insertQueueUnique(tracks: TrackRef[], index: number, mode?: PlayMode): QueueMutationResult {
+    const existing = new Set(this.state.queue.map((track) => track.id));
+    const unique: TrackRef[] = [];
+    const skippedIds: string[] = [];
+    const duplicateIds: string[] = [];
+    for (const track of tracks) {
+      if (existing.has(track.id)) {
+        skippedIds.push(track.id);
+        duplicateIds.push(track.id);
+        continue;
+      }
+      existing.add(track.id);
+      unique.push({ ...track });
+    }
+    const room = Math.max(0, MAX_QUEUE - this.state.queue.length);
+    const accepted = unique.slice(0, room);
+    for (const track of unique.slice(room)) skippedIds.push(track.id);
+    if (accepted.length === 0) {
+      return {
+        state: this.view(),
+        added: 0,
+        skipped: skippedIds.length,
+        skippedIds: skippedIds.slice(0, 50),
+        duplicateIds: duplicateIds.slice(0, 50),
+      };
+    }
+    const at = clamp(index, 0, this.state.queue.length);
+    this.state.queue.splice(at, 0, ...accepted);
+    if (mode !== undefined) this.state.mode = mode;
+    this.rebuildOrder(true);
+    if (this.state.track === null) this.startAtFirst();
+    this.emit(true);
+    return {
+      state: this.view(),
+      added: accepted.length,
+      skipped: skippedIds.length,
+      skippedIds: skippedIds.slice(0, 50),
+      duplicateIds: duplicateIds.slice(0, 50),
+    };
+  }
+
   playNext(tracks: TrackRef[], mode?: PlayMode): PlayerState {
     const insertAt = this.state.currentIndex >= 0 ? this.state.currentIndex + 1 : 0;
     const next = tracks.map((track) => ({ ...track }));
@@ -413,15 +504,9 @@ export class PlayerService {
   queueAction(action: string, tracks: TrackRef[], ids: string[], index: number, position: number): Result<PlayerState> {
     switch (action) {
       case 'add':
-        return { ok: true, data: this.appendQueue(tracks) };
-      case 'insert': {
-        const at = clamp(index, 0, this.state.queue.length);
-        this.state.queue.splice(at, 0, ...tracks.map((track) => ({ ...track })));
-        this.rebuildOrder(true);
-        if (this.state.track === null) this.startAtFirst();
-        this.emit(true);
-        return { ok: true, data: this.view() };
-      }
+        return { ok: true, data: this.appendQueueUnique(tracks).state };
+      case 'insert':
+        return { ok: true, data: this.insertQueueUnique(tracks, index).state };
       case 'remove': {
         const wanted = new Set(ids);
         const oldCurrent = this.state.track?.id;

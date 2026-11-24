@@ -165,6 +165,8 @@ window.__ModuleLoader__.load({
       never: '未检测',
       loadMore: '加载更多',
       addedToQueue: '已加入队列',
+      alreadyInQueue: '歌曲已在队列中',
+      queueAddedSkipped: '已加入 {added} 首，跳过 {skipped} 首',
       noWebUrl: '当前设备没有可打开的网页地址（Unix Socket 模式）。',
       openPanel: '打开飞牛音乐',
       currentTrack: '当前播放',
@@ -517,6 +519,8 @@ window.__ModuleLoader__.load({
       never: 'Never',
       loadMore: 'Load more',
       addedToQueue: 'Added to queue',
+      alreadyInQueue: 'Already in the queue',
+      queueAddedSkipped: 'Added {added}, skipped {skipped}',
       noWebUrl: 'This device has no openable web address (Unix socket mode).',
       openPanel: 'Open Feiniu Music',
       currentTrack: 'Now playing',
@@ -1440,8 +1444,14 @@ window.__ModuleLoader__.load({
     async function addToQueue(track) {
       if (!track) return;
       try {
-        await apiFetch('/queue', { method: 'POST', body: { action: 'add', trackIds: [track.id] } });
-        showToast(translate('addedToQueue'), 'info');
+        const data = await apiFetch('/queue', { method: 'POST', body: { action: 'add', trackIds: [track.id] } });
+        if (data && data.added === 0) {
+          showToast(translate('alreadyInQueue'), 'info');
+        } else if (data && data.skipped > 0) {
+          showToast(format(translate('queueAddedSkipped'), { added: data.added, skipped: data.skipped }), 'info');
+        } else {
+          showToast(translate('addedToQueue'), 'info');
+        }
       } catch (error) {
         showError(translate, error);
       }
@@ -3923,10 +3933,16 @@ window.__ModuleLoader__.load({
     async function addAllToQueue(tracks) {
       if (!Array.isArray(tracks) || tracks.length === 0) return;
       try {
+        let added = 0;
+        let skipped = 0;
         for (let index = 0; index < tracks.length; index += 200) {
-          await apiFetch('/queue', { method: 'POST', body: { action: 'add', trackIds: tracks.slice(index, index + 200).map((track) => track.id) } });
+          const data = await apiFetch('/queue', { method: 'POST', body: { action: 'add', trackIds: tracks.slice(index, index + 200).map((track) => track.id) } });
+          added += Number(data && data.added !== undefined ? data.added : Math.min(200, tracks.length - index));
+          skipped += Number(data && data.skipped !== undefined ? data.skipped : 0);
         }
-        showToast(translate('addedToQueue'), 'info');
+        if (added === 0 && skipped > 0) showToast(translate('alreadyInQueue'), 'info');
+        else if (skipped > 0) showToast(format(translate('queueAddedSkipped'), { added, skipped }), 'info');
+        else showToast(translate('addedToQueue'), 'info');
       } catch (caught) {
         showError(translate, caught);
       }
@@ -4427,7 +4443,11 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'fnm-context-menu', style: { left: `${left}px`, top: `${top}px` }, role: 'menu', onClick: (event) => event.stopPropagation() },
         h('div', { className: 'fnm-context-title' }, track.title),
         h('button', { type: 'button', role: 'menuitem', onClick: action(() => playTrackNow(track)) }, h(Icon, { name: 'play', size: 14 }), t('play')),
-        h('button', { type: 'button', role: 'menuitem', onClick: action(async () => { await apiFetch('/player', { method: 'POST', body: { action: 'play', trackId: track.id, mode: 'next' } }); showToast(t('playNext'), 'info'); }) }, h(Icon, { name: 'next', size: 14 }), t('playNext')),
+        h('button', { type: 'button', role: 'menuitem', onClick: action(async () => {
+          const data = await apiFetch('/player', { method: 'POST', body: { action: 'play', trackId: track.id, mode: 'next' } });
+          if (data && data.added === 0) showToast(t('alreadyInQueue'), 'info');
+          else showToast(t('playNext'), 'info');
+        }) }, h(Icon, { name: 'next', size: 14 }), t('playNext')),
         h('button', { type: 'button', role: 'menuitem', onClick: action(async () => { await addToQueue(track); }) }, h(Icon, { name: 'queue', size: 14 }), t('addQueue')),
         h('button', { type: 'button', role: 'menuitem', onClick: action(() => props.onAddPlaylist([track.id])) }, h(Icon, { name: 'playlist', size: 14 }), t('addPlaylist')),
         h('button', { type: 'button', role: 'menuitem', onClick: action(async () => { await toggleFavorite(track); }) }, h(Icon, { name: track.favorite ? 'heart' : 'heartOutline', size: 14 }), track.favorite ? t('unlike') : t('like')),

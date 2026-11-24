@@ -319,6 +319,35 @@ test('Host routes and Agent tools work end-to-end against a mock fnOS NAS', asyn
     const addQueue = await call(dshBase, 'POST', '/fnos-music/queue', { action: 'add', trackIds: ['track-2'] });
     assert.equal(addQueue.body.ok, true);
     assert.equal(addQueue.body.queueTotal, 2);
+    const duplicateAdd = await call(dshBase, 'POST', '/fnos-music/queue', { action: 'add', trackIds: ['track-2'] });
+    assert.equal(duplicateAdd.body.ok, true);
+    assert.equal(duplicateAdd.body.added, 0);
+    assert.equal(duplicateAdd.body.skipped, 1);
+    assert.equal(duplicateAdd.body.queueTotal, 2);
+
+    const batchDuplicateAdd = await call(dshBase, 'POST', '/fnos-music/queue', { action: 'add', trackIds: ['track-1', 'track-2', 'track-2'] });
+    assert.equal(batchDuplicateAdd.body.ok, true);
+    assert.equal(batchDuplicateAdd.body.added, 0);
+    assert.equal(batchDuplicateAdd.body.skipped, 3);
+    assert.equal(batchDuplicateAdd.body.queueTotal, 2);
+
+    const duplicateInsert = await call(dshBase, 'POST', '/fnos-music/queue', { action: 'insert', trackIds: ['track-1'], index: 0 });
+    assert.equal(duplicateInsert.body.ok, true);
+    assert.equal(duplicateInsert.body.added, 0);
+    assert.equal(duplicateInsert.body.queueTotal, 2);
+
+    const duplicateAppendPlay = await call(dshBase, 'POST', '/fnos-music/player', { action: 'play', trackId: 'track-2', mode: 'append' });
+    assert.equal(duplicateAppendPlay.body.ok, true);
+    assert.equal(duplicateAppendPlay.body.added, 0);
+    assert.equal(duplicateAppendPlay.body.skipped, 1);
+    assert.equal(duplicateAppendPlay.body.player.queueTotal, 2);
+
+    const queueTool = ctx.tools.get('fnos_music_queue');
+    const duplicateAgentAdd = await queueTool.execute({ action: 'add', trackIds: ['track-1'] }, { signal: new AbortController().signal });
+    assert.equal(duplicateAgentAdd.ok, true);
+    assert.equal(duplicateAgentAdd.added, 0);
+    assert.equal(duplicateAgentAdd.skipped, 1);
+
     const playQueued = await call(dshBase, 'POST', '/fnos-music/player', { action: 'playTrack', trackId: 'track-2' });
     assert.equal(playQueued.body.ok, true, JSON.stringify(playQueued.body));
     assert.equal(playQueued.body.player.queueTotal, 2);

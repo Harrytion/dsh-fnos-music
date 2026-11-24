@@ -679,21 +679,39 @@ export class MusicBridge {
     const playMode: PlayMode | undefined = params.shuffle === true ? 'shuffle' : undefined;
     const before = this.player.view({ queue: false });
     let state: PlayerState;
-    if (mode === 'append') state = this.player.appendQueue(resolved.data, playMode);
-    else if (mode === 'next') state = this.player.playNext(resolved.data, playMode);
-    else state = this.player.replaceQueue(resolved.data, playMode);
+    let added = resolved.data.length;
+    let skipped = 0;
+    let skippedIds: string[] = [];
+    if (mode === 'append') {
+      const mutation = this.player.appendQueueUnique(resolved.data, playMode);
+      state = mutation.state;
+      added = mutation.added;
+      skipped = mutation.skipped;
+      skippedIds = mutation.skippedIds;
+    } else if (mode === 'next') {
+      const insertAt = this.player.raw().currentIndex >= 0 ? this.player.raw().currentIndex + 1 : 0;
+      const mutation = this.player.insertQueueUnique(resolved.data, insertAt, playMode);
+      state = mutation.state;
+      added = mutation.added;
+      skipped = mutation.skipped;
+      skippedIds = mutation.skippedIds;
+    } else {
+      state = this.player.replaceQueue(resolved.data, playMode);
+    }
     this.log({
       at: Date.now(),
       kind: 'play',
       trackId: state.track?.id,
       title: state.track?.title,
-      message: `${mode} ${resolved.data.length} track(s)`,
+      message: `${mode} ${added} track(s)${skipped > 0 ? `, skipped ${skipped}` : ''}`,
     });
     return {
       ok: true,
       action: mode,
       played: state.track,
-      added: resolved.data.length,
+      added,
+      skipped,
+      skippedIds,
       queueLength: state.queueTotal,
       queueIndex: state.currentIndex,
       mode: state.mode,
@@ -859,6 +877,23 @@ export class MusicBridge {
         tracks = (result.data.items as TrackRef[]).slice(0, 20);
       }
       if (tracks.length === 0) return { ok: false, error: makeError('not_found', 'No tracks matched the queue request') };
+    }
+    if (action === 'add' || action === 'insert') {
+      const mutation = action === 'add'
+        ? this.player.appendQueueUnique(tracks)
+        : this.player.insertQueueUnique(tracks, int(params.index, 0, 0, 10_000));
+      return {
+        ok: true,
+        action,
+        added: mutation.added,
+        skipped: mutation.skipped,
+        skippedIds: mutation.skippedIds,
+        duplicateIds: mutation.duplicateIds,
+        queue: this.player.queuePage(offset, limit),
+        queueTotal: this.player.raw().queue.length,
+        queueRevision: this.player.queueRevision,
+        currentIndex: this.player.raw().currentIndex,
+      };
     }
     const result = this.player.queueAction(
       action,
