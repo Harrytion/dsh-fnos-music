@@ -329,3 +329,59 @@ test('queue insert deduplicates without moving an existing track', () => {
   assert.equal(result.skipped, 1);
   assert.deepEqual(player.raw().queue.map((item) => item.id), ['a', 'c', 'b']);
 });
+
+test('vault stores devices in a local file and restores them without the credential service', async () => {
+  const os = await import('node:os');
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-fnos-vault-'));
+  const file = path.join(directory, 'vault.json');
+  const first = new Vault(undefined, 'local-only', file);
+  await first.open();
+  await first.upsert({ ...target('nas'), token: 'secret-token' });
+  await first.setActive('nas');
+  await first.updateSettings({ cacheLimitMb: 512 });
+
+  const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(raw.devices[0].id, 'nas');
+  assert.equal(raw.devices[0].token, 'secret-token');
+  assert.equal(raw.activeDeviceId, 'nas');
+  assert.equal(raw.settings.cacheLimitMb, 512);
+
+  const restored = new Vault(undefined, 'local-only', file);
+  await restored.open();
+  assert.equal(restored.devices.length, 1);
+  assert.equal(restored.devices[0].id, 'nas');
+  assert.equal(restored.devices[0].token, 'secret-token');
+  assert.equal(restored.activeDeviceId, 'nas');
+  assert.equal(restored.settings.cacheLimitMb, 512);
+  assert.equal(restored.persistent, true);
+  assert.equal(restored.vaultFile, file);
+});
+
+test('vault merges a device that only exists in the credential record', async () => {
+  const os = await import('node:os');
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-fnos-vault-'));
+  const file = path.join(directory, 'vault.json');
+  const credentials = memoryCredentials();
+  credentials.records.set('dsh-fnos-music/merge', {
+    kind: 'grant',
+    payload: {
+      version: 3,
+      activeDeviceId: 'from-record',
+      devices: [{ ...target('from-record'), updatedAt: Date.now() }],
+      listeners: [{ id: 'default', name: '我', createdAt: Date.now() }],
+      activeListenerId: 'default',
+      settings: { cacheLimitMb: 256 },
+    },
+  });
+  const vault = new Vault(credentials, 'merge', file);
+  await vault.open();
+  assert.equal(vault.devices.length, 1);
+  assert.equal(vault.devices[0].id, 'from-record');
+  assert.equal(vault.activeDeviceId, 'from-record');
+  const written = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(written.devices[0].id, 'from-record');
+});

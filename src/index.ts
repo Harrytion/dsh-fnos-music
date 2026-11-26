@@ -53,6 +53,13 @@ export function apply(ctx: DshContext): void {
     };
   }, 'dsh-fnos-music: bridge');
 
+  // The credentials service may appear after this bundle is applied; adopt it
+  // whenever it shows up so the saved devices survive a Host restart.
+  ctx.inject(['credentials'], (scope) => {
+    if (scope.credentials === undefined) return;
+    void bridge.attachCredentials(scope.credentials);
+  });
+
   ctx.inject(['tools'], (scope) => {
     if (scope.tools === undefined) return;
     for (const tool of createTools(bridge)) {

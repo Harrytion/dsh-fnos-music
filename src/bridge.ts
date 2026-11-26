@@ -157,7 +157,8 @@ export class MusicBridge {
   private sceneState: SceneState = { scene: null, active: false, startedAt: 0, tracks: 0 };
 
   constructor(private readonly options: BridgeOptions) {
-    this.vault = new Vault(options.credentials, options.profile);
+    const dataDir = options.dataDir ?? path.join(options.cacheDir, 'data');
+    this.vault = new Vault(options.credentials, options.profile, path.join(dataDir, 'vault.json'));
     this.limiter = new Limiter(3, 50);
     this.logs = new RingLog(200, true);
     this.confirm = new ConfirmGate();
@@ -180,7 +181,6 @@ export class MusicBridge {
       onChange: () => this.onPlayerChange(),
     });
     this.recommendService = new RecommendService(this.library);
-    const dataDir = options.dataDir ?? path.join(options.cacheDir, 'data');
     this.history = new HistoryService(dataDir);
     this.profile = new ProfileService(this.history, this.library);
     this.sceneService = new SceneService(this.profile, this.library);
@@ -220,6 +220,17 @@ export class MusicBridge {
     this.probeScheduler.start();
     void this.refreshCacheSummary();
     if (active !== undefined) void this.refreshLibrarySummary();
+  }
+
+  /**
+   * Adopt a credentials service that became available after startup. The
+   * device list is re-read from the store and pushed to every open page.
+   */
+  async attachCredentials(credentials: CredentialsLike): Promise<void> {
+    await this.vault.setCredentials(credentials);
+    await this.vault.open();
+    this.hub.send('devices', this.deviceViews());
+    await this.emitState();
   }
 
   private apiOrNull(): FnosApi | null {
@@ -316,6 +327,7 @@ export class MusicBridge {
       library: this.librarySummary,
       audioClients: this.player.clientsCount(),
       persistent: this.vault.persistent,
+      vaultFile: this.vault.vaultFile,
       at: Date.now(),
     };
   }
@@ -398,6 +410,7 @@ export class MusicBridge {
       settings: this.vault.settings,
       compat: { ...this.compatStatus },
       persistent: this.vault.persistent,
+      vaultFile: this.vault.vaultFile,
       slowRelay: this.connection.status().slowRelay,
     };
   }

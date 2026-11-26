@@ -138,6 +138,7 @@ export function createTools(bridge: MusicBridge): HostToolDefinition[] {
           cache: { type: 'object', additionalProperties: true },
           settings: { type: 'object', additionalProperties: true },
           persistent: { type: 'boolean' },
+          vaultFile: { type: 'string' },
         }),
         render: (_args, value) => render(value),
       },

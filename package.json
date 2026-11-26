@@ -1,6 +1,6 @@
 {
   "name": "dsh-fnos-music",
-  "version": "3.0.9",
+  "version": "3.0.10",
   "private": true,
   "type": "module",
   "description": "Feiniu Music bridge for DeepSeek Harness V3: original-web-style app shell, local history/stats, listener profiles, scenes and continuous AI DJ, voice intent, audit/read-only agent mode, traffic stats, and the V2 transports/playlists/floating player.",

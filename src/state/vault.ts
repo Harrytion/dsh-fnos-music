@@ -7,6 +7,8 @@
  * `grant` record, so writes are serialized by `modifyRecord`.
  */
 import { randomBytes } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import type {
   CredentialsLike,
   DeviceView,
@@ -175,31 +177,129 @@ function parseData(value: unknown): VaultData | undefined {
   };
 }
 
+/**
+ * Merge two vault snapshots. The first one is the local copy, the second one
+ * the DSH credential record; a device missing from the local copy is restored
+ * from the record so an interrupted write can never lose a device.
+ */
+function mergeVaultData(local: VaultData | undefined, record: VaultData | undefined): VaultData | undefined {
+  if (local === undefined) return record;
+  if (record === undefined) return local;
+  const devices = [...local.devices];
+  const index = new Map(devices.map((device, position) => [device.id, position]));
+  for (const device of record.devices) {
+    const at = index.get(device.id);
+    if (at === undefined) {
+      index.set(device.id, devices.length);
+      devices.push(device);
+      continue;
+    }
+    const current = devices[at]!;
+    if (device.updatedAt > current.updatedAt) devices[at] = device;
+  }
+  const listeners = local.listeners.length > 0 ? local.listeners : record.listeners;
+  const activeListenerId = listeners.some((listener) => listener.id === local.activeListenerId)
+    ? local.activeListenerId
+    : listeners.some((listener) => listener.id === record.activeListenerId)
+      ? record.activeListenerId
+      : listeners[0]?.id ?? 'default';
+  const activeDeviceId = devices.some((device) => device.id === local.activeDeviceId)
+    ? local.activeDeviceId
+    : devices.some((device) => device.id === record.activeDeviceId)
+      ? record.activeDeviceId
+      : null;
+  return {
+    version: 3,
+    activeDeviceId,
+    devices,
+    listeners,
+    activeListenerId,
+    settings: local.settings,
+  };
+}
+
 export class Vault {
   readonly key: string;
-  readonly persistent: boolean;
   private data: VaultData = defaultData();
   private opened = false;
+  private credentials: CredentialsLike | undefined;
+  private readonly filePath: string | undefined;
 
   constructor(
-    private readonly credentials: CredentialsLike | undefined,
+    credentials: CredentialsLike | undefined,
     profile: string,
+    filePath?: string,
   ) {
     this.key = `dsh-fnos-music/${sanitizeProfile(profile)}`;
-    this.persistent = credentials !== undefined;
+    this.credentials = credentials;
+    this.filePath = filePath;
+  }
+
+  /** True when the vault survives a Host restart (local file or credential record). */
+  get persistent(): boolean {
+    return this.filePath !== undefined || this.credentials !== undefined;
+  }
+
+  /** Absolute path of the local vault file; empty when only the record is used. */
+  get vaultFile(): string {
+    return this.filePath ?? '';
   }
 
   async open(): Promise<void> {
     if (this.opened) return;
     this.opened = true;
-    if (this.credentials === undefined) return;
+    const record = await this.readRecord();
+    const local = await this.readFile();
+    const merged = mergeVaultData(local, record);
+    if (merged === undefined) return;
+    this.data = merged;
+    if (local === undefined) await this.writeFile();
+  }
+
+  /** Adopt a credentials service that appeared after startup and re-sync. */
+  async setCredentials(credentials: CredentialsLike | undefined): Promise<void> {
+    this.credentials = credentials;
+    if (!this.opened) return;
+    const record = await this.readRecord();
+    if (record === undefined) return;
+    const merged = mergeVaultData(this.data, record);
+    if (merged === undefined) return;
+    this.data = merged;
+    await this.save();
+  }
+
+  private async readRecord(): Promise<VaultData | undefined> {
+    if (this.credentials === undefined) return undefined;
     try {
       const record = await this.credentials.readRecord(this.key);
-      const parsed = parseData(record?.payload);
-      if (parsed !== undefined) this.data = parsed;
+      return parseData(record?.payload);
     } catch {
-      // A corrupt or unreadable record falls back to a clean vault; the UI
-      // reports `persistent: true` but setup is required again.
+      // A corrupt or unreadable record falls back to the local copy.
+      return undefined;
+    }
+  }
+
+  private async readFile(): Promise<VaultData | undefined> {
+    if (this.filePath === undefined) return undefined;
+    try {
+      const raw = await readFile(this.filePath, 'utf8');
+      return parseData(JSON.parse(raw));
+    } catch {
+      // No local copy yet, or it cannot be read.
+      return undefined;
+    }
+  }
+
+  private async writeFile(): Promise<void> {
+    if (this.filePath === undefined) return;
+    const directory = path.dirname(this.filePath);
+    const temporary = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(temporary, `${JSON.stringify(this.data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      await rename(temporary, this.filePath);
+    } catch {
+      await rm(temporary, { force: true }).catch(() => undefined);
     }
   }
 
@@ -242,11 +342,18 @@ export class Vault {
   }
 
   private async save(): Promise<void> {
+    // The local data file is the primary store: it always exists, even when
+    // the DSH credential service is unavailable.
+    await this.writeFile();
     if (this.credentials === undefined) return;
-    await this.credentials.modifyRecord(this.key, async () => ({
-      kind: 'grant',
-      payload: this.data,
-    }));
+    try {
+      await this.credentials.modifyRecord(this.key, async () => ({
+        kind: 'grant',
+        payload: this.data,
+      }));
+    } catch {
+      // The local copy already holds the state; the record catches up later.
+    }
   }
 
   async setActive(id: string | null): Promise<void> {
@@ -323,6 +430,9 @@ export class Vault {
 
   async reset(): Promise<void> {
     this.data = defaultData();
+    if (this.filePath !== undefined) {
+      await rm(this.filePath, { force: true }).catch(() => undefined);
+    }
     if (this.credentials !== undefined) {
       try {
         await this.credentials.deleteRecord(this.key);

@@ -240,6 +240,8 @@ export interface Snapshot {
   library: LibrarySummary | null;
   audioClients: number;
   persistent: boolean;
+  /** Absolute path of the local vault file that stores devices and tokens. */
+  vaultFile: string;
   at: number;
 }
 
