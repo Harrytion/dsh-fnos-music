@@ -103,3 +103,14 @@ test('client ships recovery paths for stream, route-gap, and SSE failures', asyn
   assert.match(source, /error\.status === 404/);
   assert.match(source, /error\.status === 405/);
 });
+
+test('up-next lists render every queued track after the current one', async () => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const source = await fs.readFile(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'client.js'), 'utf8');
+  assert.doesNotMatch(source, /queue\.slice\(index \+ 1, index \+ 7\)/);
+  assert.doesNotMatch(source, /queue\.slice\(0, 6\)/);
+  assert.match(source, /queue\.slice\(index \+ 1\)/);
+  assert.match(source, /\.fnm-aside-list \{[^}]*overflow-y: auto/);
+  assert.match(source, /\.fnm-upnext \{[^}]*max-height: 420px/);
+});

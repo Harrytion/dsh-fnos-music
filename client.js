@@ -4076,7 +4076,7 @@ window.__ModuleLoader__.load({
       if (!track) return h('div', { className: 'fnm-view fnm-empty-view' }, h(Icon, { name: 'music', size: 36 }), h('div', { className: 'fnm-empty-title' }, t('noTrack')), h('button', { type: 'button', className: 'fnm-btn fnm-btn-primary', onClick: () => props.navigate({ name: 'home' }) }, t('home')));
       const queue = player.queue || [];
       const index = player.currentIndex;
-      const upcoming = index >= 0 ? queue.slice(index + 1, index + 7) : queue.slice(0, 6);
+      const upcoming = index >= 0 ? queue.slice(index + 1) : queue;
       return h('div', { className: 'fnm-view fnm-now-view' },
         h('div', { className: 'fnm-now-main-panel' },
           h('div', { className: 'fnm-now-art' }, h(Cover, { coverId: track.coverId, size: '100%', alt: track.title })),
@@ -4426,7 +4426,7 @@ window.__ModuleLoader__.load({
       const track = player.track;
       const queue = player.queue || [];
       const index = player.currentIndex;
-      const upcoming = index >= 0 ? queue.slice(index + 1, index + 7) : queue.slice(0, 6);
+      const upcoming = index >= 0 ? queue.slice(index + 1) : queue;
       return h('aside', { className: 'fnm-aside' },
         h('div', { className: 'fnm-aside-head' }, h('span', null, t('nowPlaying')), h('button', { type: 'button', className: 'fnm-link', onClick: props.onOpenQueue }, t('queue'))),
         track ? h('div', { className: 'fnm-aside-current' },
@@ -5762,15 +5762,15 @@ window.__ModuleLoader__.load({
 .fnm-recent-title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fnm-recent-sub { font-size: 10px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fnm-recent-time { font-size: 10px; flex: none; }
-.fnm-aside { width: 274px; flex: none; border-left: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); padding: 14px 12px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.fnm-aside { width: 274px; flex: none; min-height: 0; border-left: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); padding: 14px 12px; overflow: hidden; display: flex; flex-direction: column; gap: 12px; }
 .fnm-aside-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 600; }
 .fnm-aside-current { display: flex; align-items: center; gap: 9px; padding: 9px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2); }
 .fnm-aside-current-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .fnm-aside-title { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fnm-aside-sub { font-size: 10px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fnm-aside-label { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--dsw-alias-label-tertiary); }
-.fnm-aside-list { display: flex; flex-direction: column; gap: 1px; }
-.fnm-aside-row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.fnm-aside-list { display: flex; flex-direction: column; gap: 1px; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+.fnm-aside-row { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; content-visibility: auto; contain-intrinsic-size: 38px; }
 .fnm-aside-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .fnm-aside-index { width: 18px; font-size: 10px; color: var(--dsw-alias-label-tertiary); flex: none; }
 .fnm-aside-item-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -5845,7 +5845,7 @@ window.__ModuleLoader__.load({
 .fnm-now-side-panel { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
 .fnm-now-card { border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; padding: 12px; background: var(--dsw-alias-bg-layer-1); }
 .fnm-now-lyrics { height: 230px; overflow: auto; margin-top: 8px; }
-.fnm-upnext { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; }
+.fnm-upnext { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; max-height: 420px; overflow-y: auto; overscroll-behavior: contain; }
 .fnm-upnext-row { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border: 0; border-radius: 6px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .fnm-upnext-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
 .fnm-upnext-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 11px; }
