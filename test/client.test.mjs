@@ -114,3 +114,25 @@ test('up-next lists render every queued track after the current one', async () =
   assert.match(source, /\.fnm-aside-list \{[^}]*overflow-y: auto/);
   assert.match(source, /\.fnm-upnext \{[^}]*max-height: 420px/);
 });
+
+test('client recovers from a blocked autoplay on the next user gesture', async () => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const source = await fs.readFile(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'client.js'), 'utf8');
+  assert.match(source, /function isAutoplayError/);
+  assert.match(source, /NotAllowedError/);
+  assert.match(source, /document\.addEventListener\('pointerdown', onUserGesture, true\)/);
+  assert.match(source, /function resumeAfterGesture/);
+  assert.match(source, /function handlePlayRejected/);
+  assert.match(source, /点击页面任意位置即可继续播放/);
+});
+
+test('autoplay recovery ignores aborted plays and waits for a usable source', async () => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const source = await fs.readFile(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'client.js'), 'utf8');
+  assert.match(source, /name === 'AbortError'/);
+  assert.match(source, /name === 'NotSupportedError'/);
+  assert.match(source, /gestureResumedAt/);
+  assert.match(source, /store\.compatLoading\) return/);
+});

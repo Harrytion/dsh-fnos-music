@@ -144,7 +144,7 @@ window.__ModuleLoader__.load({
       compatFfmpeg: 'ffmpeg 已启用',
       compatMse: '未检测到 ffmpeg，使用浏览器 MSE 备用',
       compatHint: 'DTS/APE 等格式自动选择后端；普通 FLAC/MP3/PCM WAV 仍直连。',
-      autoplayBlocked: '浏览器拦截了自动播放，点一下播放按钮即可。',
+      autoplayBlocked: '浏览器拦截了自动播放，点击页面任意位置即可继续播放。',
       claimPlayback: '在此页面播放',
       otherPagePlaying: '另一个页面正在播放',
       noAudioClient: '当前没有 DSH 页面在出声',
@@ -501,7 +501,7 @@ window.__ModuleLoader__.load({
       compatFfmpeg: 'ffmpeg enabled',
       compatMse: 'ffmpeg not detected; using browser MSE fallback',
       compatHint: 'DTS/APE formats pick a backend automatically; FLAC/MP3/PCM WAV stay direct.',
-      autoplayBlocked: 'The browser blocked autoplay; press play once.',
+      autoplayBlocked: 'The browser blocked autoplay; click anywhere in the page to continue.',
       claimPlayback: 'Play in this page',
       otherPagePlaying: 'Another page is playing',
       noAudioClient: 'No DSH page is producing audio',
@@ -942,6 +942,110 @@ window.__ModuleLoader__.load({
     let floatWindowToggle = null;
     let floatWindowOpen = null;
     let floatWindowClose = null;
+    let autoplayBlocked = false;
+    let gestureResumeArmed = false;
+    let gestureResumedAt = 0;
+
+    /** Chromium reports a blocked autoplay as NotAllowedError. */
+    function isAutoplayError(error) {
+      if (!error) return false;
+      const name = String(error.name || '');
+      if (name === 'NotAllowedError') return true;
+      const message = String(error.message || '');
+      return /user didn't interact|user gesture|autoplay/i.test(message);
+    }
+
+    function armGestureResume() {
+      if (gestureResumeArmed) return;
+      if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+      gestureResumeArmed = true;
+      document.addEventListener('pointerdown', onUserGesture, true);
+      document.addEventListener('keydown', onUserGesture, true);
+    }
+
+    function disarmGestureResume() {
+      if (!gestureResumeArmed) return;
+      if (typeof document === 'undefined' || typeof document.removeEventListener !== 'function') return;
+      gestureResumeArmed = false;
+      document.removeEventListener('pointerdown', onUserGesture, true);
+      document.removeEventListener('keydown', onUserGesture, true);
+    }
+
+    /** Any click or key press resumes the blocked playback. */
+    function onUserGesture() {
+      if (!autoplayBlocked) {
+        disarmGestureResume();
+        return;
+      }
+      const element = audio;
+      // A source-less element (compat conversion in flight) cannot play yet;
+      // keep the listener armed for the next real gesture.
+      if (element === null || !element.src || store.compatLoading) return;
+      disarmGestureResume();
+      autoplayBlocked = false;
+      void resumeAfterGesture();
+    }
+
+    async function resumeAfterGesture() {
+      const element = audio;
+      if (element === null) return;
+      gestureResumedAt = Date.now();
+      // The play() call has to happen inside the gesture, before any await.
+      let started = null;
+      try {
+        started = element.play();
+      } catch (error) {
+        handlePlayRejected(error);
+        return;
+      }
+      if (audioContext !== null && audioContext.state === 'suspended') {
+        try { await audioContext.resume(); } catch { /* the analyser stays silent */ }
+      }
+      try {
+        if (started && typeof started.then === 'function') await started;
+        setStore({ audioError: '' });
+        apiFetch('/player', {
+          method: 'POST',
+          body: {
+            action: 'progress',
+            clientId,
+            positionMs: Math.round(element.currentTime * 1000),
+            status: 'playing',
+          },
+        }).catch(() => {});
+      } catch (error) {
+        handlePlayRejected(error);
+      }
+    }
+
+    /** Route a rejected play() promise to the right UI state. */
+    function handlePlayRejected(error) {
+      if (isAutoplayError(error)) {
+        autoplayBlocked = true;
+        armGestureResume();
+        setStore({ audioError: 'autoplay' });
+        const positionMs = audio !== null && Number.isFinite(audio.currentTime)
+          ? Math.round(audio.currentTime * 1000)
+          : 0;
+        apiFetch('/player', {
+          method: 'POST',
+          body: { action: 'progress', clientId, positionMs, status: 'paused' },
+        }).catch(() => {});
+        return;
+      }
+      const name = error && typeof error.name === 'string' ? error.name : '';
+      // A pause/load interrupted a pending play(); that is not an error.
+      if (name === 'AbortError') return;
+      // The compat path clears the source while the conversion is running.
+      if (name === 'NotSupportedError' && (audio === null || !audio.src)) return;
+      setStore({ audioError: audioSource === 'compat' ? 'compat' : 'audio' });
+    }
+
+    /** A deliberate play gesture clears a pending autoplay block. */
+    function clearAutoplayBlock() {
+      autoplayBlocked = false;
+      disarmGestureResume();
+    }
 
     function ensureAnalyser() {
       if (typeof window === 'undefined') return null;
@@ -1181,7 +1285,7 @@ window.__ModuleLoader__.load({
           if (player.status === 'playing') {
             const started = element.play();
             if (started && typeof started.catch === 'function') {
-              started.catch(() => setStore({ audioError: 'autoplay' }));
+              started.catch((error) => handlePlayRejected(error));
             }
           }
         }
@@ -1239,6 +1343,7 @@ window.__ModuleLoader__.load({
 
     function stopAudio() {
       cleanupCompat();
+      clearAutoplayBlock();
       setStore({ compatLoading: false });
       clearAudioSource();
       audio = null;
@@ -1288,12 +1393,8 @@ window.__ModuleLoader__.load({
       if (player.status === 'playing' && !store.compatLoading) {
         const started = element.play();
         if (started && typeof started.catch === 'function') {
-          started.catch(() => {
-            setStore({ audioError: 'autoplay' });
-            apiFetch('/player', {
-              method: 'POST',
-              body: { action: 'progress', clientId, positionMs: player.positionMs, status: 'paused' },
-            }).catch(() => {});
+          started.catch((error) => {
+            handlePlayRejected(error);
           });
         }
       } else if (!element.paused) {
@@ -1346,6 +1447,7 @@ window.__ModuleLoader__.load({
 
     async function playQueueTrack(track) {
       if (!track) return;
+      clearAutoplayBlock();
       failedTrackId = null;
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
@@ -1355,6 +1457,7 @@ window.__ModuleLoader__.load({
 
     async function playTrackNow(track) {
       if (!track) return;
+      clearAutoplayBlock();
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
       const playable = await hydrateTrack(track);
@@ -1368,7 +1471,7 @@ window.__ModuleLoader__.load({
       if (!store.compatLoading) {
         const started = element.play();
         if (started && typeof started.catch === 'function') {
-          started.catch(() => setStore({ audioError: 'autoplay' }));
+          started.catch((error) => handlePlayRejected(error));
         }
       }
       await postPlayer({ action: 'play', trackId: track.id });
@@ -1399,6 +1502,7 @@ window.__ModuleLoader__.load({
       const snapshot = store.snapshot;
       const player = snapshot && snapshot.player;
       if (!player || !player.track) return;
+      clearAutoplayBlock();
       void claimDriver();
       if (audioContext !== null && audioContext.state === 'suspended') void audioContext.resume().catch(() => {});
       const playable = await hydrateTrack(player.track);
@@ -1413,13 +1517,19 @@ window.__ModuleLoader__.load({
         await postPlayer({ action: player.status === 'playing' ? 'pause' : 'resume' });
         return;
       }
+      // A pointerdown gesture may already have resumed playback; do not let the
+      // following click immediately pause it again.
+      if (Date.now() - gestureResumedAt < 500 && !element.paused) {
+        await postPlayer({ action: 'resume' });
+        return;
+      }
       if (player.status === 'playing' && !element.paused) {
         element.pause();
         await postPlayer({ action: 'pause' });
       } else {
         const started = element.play();
         if (started && typeof started.catch === 'function') {
-          started.catch(() => setStore({ audioError: 'autoplay' }));
+          started.catch((error) => handlePlayRejected(error));
         }
         await postPlayer({ action: 'resume' });
       }
