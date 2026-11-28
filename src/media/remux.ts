@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { accessSync, constants, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 import type { CompatBackend, Result } from '../types.js';
 import { fail } from '../errors.js';
 
@@ -156,4 +157,106 @@ export async function remuxFmp4ToWebm(input: Buffer, signal?: AbortSignal): Prom
   } finally {
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** One live ffmpeg transcode from an upstream audio stream to WebM/Opus. */
+export interface WebmTranscoder {
+  stdout: Readable;
+  done: Promise<Result<null>>;
+  kill(): void;
+}
+
+const STREAM_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
+ * Stream the original audio (WAV/DTS, APE, DSD, ...) through local ffmpeg and
+ * expose its WebM/Opus stdout. This avoids the NAS transcode cache entirely and
+ * starts playback after the first encoded frames instead of buffering the
+ * whole track.
+ */
+export function createWebmTranscoder(input: Readable, signal?: AbortSignal): Result<WebmTranscoder> {
+  const ffmpeg = findFfmpeg();
+  if (ffmpeg === undefined) {
+    return fail('unsupported', 'Compatible playback requires ffmpeg', {
+      hint: '当前曲目的格式浏览器无法直接播放。请安装 ffmpeg（或在 DSH_FNOS_FFMPEG 中指定路径）后重试。',
+    });
+  }
+  const child = spawn(ffmpeg, [
+    '-v', 'error',
+    '-i', 'pipe:0',
+    '-map', '0:a:0',
+    '-vn',
+    '-c:a', 'libopus',
+    '-b:a', '160k',
+    '-ac', '2',
+    '-f', 'webm',
+    'pipe:1',
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = '';
+  let settled = false;
+  let timedOut = false;
+  let finished: (result: Result<null>) => void = () => undefined;
+  const done = new Promise<Result<null>>((resolve) => {
+    finished = resolve;
+  });
+  const kill = (): void => {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  };
+  const timer = setTimeout(() => {
+    timedOut = true;
+    kill();
+  }, STREAM_TIMEOUT_MS);
+  const onAbort = (): void => {
+    kill();
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const finish = (result: Result<null>): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    finished(result);
+  };
+  child.stderr?.on('data', (chunk: Buffer) => {
+    if (stderr.length < 8000) stderr += chunk.toString('utf8');
+  });
+  child.once('error', (error) => {
+    finish(fail('unsupported', 'Local ffmpeg transcode failed', {
+      detail: error instanceof Error ? error.message : String(error),
+      hint: '本机 ffmpeg 无法启动，兼容播放失败。',
+    }));
+  });
+  child.once('close', (code) => {
+    if (code === 0) {
+      finish({ ok: true, data: null });
+      return;
+    }
+    finish(fail('unsupported', 'Local ffmpeg transcode failed', {
+      detail: timedOut ? 'ffmpeg timed out' : stderr.slice(-2000),
+      hint: '当前曲目无法在本机转换为浏览器可播放的格式。',
+    }));
+  });
+  input.once('error', (error) => {
+    try { child.stdin?.destroy(); } catch { /* already closed */ }
+    finish(fail('server', 'Original audio stream failed', {
+      detail: error instanceof Error ? error.message : String(error),
+    }));
+  });
+  input.once('aborted', () => {
+    kill();
+  });
+  input.pipe(child.stdin);
+  if (signal?.aborted === true) kill();
+  return {
+    ok: true,
+    data: {
+      stdout: child.stdout,
+      done,
+      kill,
+    },
+  };
 }

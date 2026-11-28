@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compatBackendFor, findFfmpeg, resetFfmpegCache, remuxFmp4ToWebm } from '../lib/media/remux.js';
+import { Readable } from 'node:stream';
+import { WAV } from './mock-nas.mjs';
+import { compatBackendFor, createWebmTranscoder, findFfmpeg, resetFfmpegCache, remuxFmp4ToWebm } from '../lib/media/remux.js';
 
 test('compatibility backend prefers ffmpeg and falls back to MSE', () => {
   assert.equal(compatBackendFor('/usr/bin/ffmpeg'), 'ffmpeg');
@@ -41,4 +43,22 @@ test('preflight reports the MSE fallback when ffmpeg is unavailable', () => {
   assert.match(output, /ffmpeg: missing/);
   assert.match(output, /backend: mse/);
   assert.match(output, /fallback: browser MSE/);
+});
+
+test('local ffmpeg transcodes a raw WAV stream to WebM', async (t) => {
+  resetFfmpegCache();
+  if (findFfmpeg() === undefined) {
+    t.skip('ffmpeg is not installed');
+    return;
+  }
+  const created = createWebmTranscoder(Readable.from([WAV]));
+  assert.equal(created.ok, true, JSON.stringify(created));
+  if (created.ok !== true) return;
+  const chunks = [];
+  created.data.stdout.on('data', (chunk) => chunks.push(chunk));
+  const result = await created.data.done;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const output = Buffer.concat(chunks);
+  assert.ok(output.length > 0, 'transcode produced no output');
+  assert.deepEqual([...output.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
 });

@@ -159,8 +159,17 @@ export class FnosApi {
       body: { guid, output: { codec, channel } },
     });
     if (result.ok !== true) return result;
-    const url = text(recordOf(result.data).url);
-    if (url === '') return fail('unsupported', 'Transcode did not return a URL');
+    const data = recordOf(result.data);
+    const url = text(data.url);
+    if (url === '') {
+      const errmsg = text(data.errmsg) || text(data.message);
+      const errno = text(data.errno);
+      const detail = errno !== '' ? `errno=${errno}` : undefined;
+      return fail('unsupported', errmsg !== '' ? `NAS transcode failed: ${errmsg}` : 'Transcode did not return a URL', {
+        ...(detail !== undefined ? { detail } : {}),
+        hint: 'NAS 音乐服务没有完成兼容转码。若本机安装了 ffmpeg，插件会自动改用本机转码。',
+      });
+    }
     return { ok: true, data: url };
   }
 

@@ -780,6 +780,7 @@ window.__ModuleLoader__.load({
       toast: null,
       audioError: '',
       compatLoading: false,
+      compatErrorDetail: '',
       isDriver: false,
       favorites: {},
       loadError: '',
@@ -791,6 +792,7 @@ window.__ModuleLoader__.load({
       store.toast = patch.toast !== undefined ? patch.toast : store.toast;
       store.audioError = patch.audioError !== undefined ? patch.audioError : store.audioError;
       store.compatLoading = patch.compatLoading !== undefined ? patch.compatLoading : store.compatLoading;
+      store.compatErrorDetail = patch.compatErrorDetail !== undefined ? patch.compatErrorDetail : store.compatErrorDetail;
       store.isDriver = patch.isDriver !== undefined ? patch.isDriver : store.isDriver;
       store.favorites = patch.favorites !== undefined ? patch.favorites : store.favorites;
       store.loadError = patch.loadError !== undefined ? patch.loadError : store.loadError;
@@ -1253,6 +1255,24 @@ window.__ModuleLoader__.load({
     }
 
     async function loadCompatAudio(track, generation) {
+      const backend = store.snapshot && store.snapshot.compat ? store.snapshot.compat.backend : '';
+      if (backend === 'ffmpeg') {
+        // Local ffmpeg transcodes the original stream directly; playback starts
+        // as soon as the first WebM frames arrive instead of waiting for a
+        // complete NAS transcode.
+        const element = ensureAudio();
+        element.src = `${API}/compat-stream?guid=${encodeURIComponent(track.id)}`;
+        element.load();
+        setStore({ compatLoading: true, audioError: '', compatErrorDetail: '' });
+        const player = store.snapshot && store.snapshot.player;
+        if (player && player.track && player.track.id === track.id && player.status === 'playing') {
+          const started = element.play();
+          if (started && typeof started.catch === 'function') {
+            started.catch((error) => handlePlayRejected(error));
+          }
+        }
+        return;
+      }
       const controller = new AbortController();
       compatAbort = controller;
       try {
@@ -1260,7 +1280,21 @@ window.__ModuleLoader__.load({
           credentials: 'same-origin',
           signal: controller.signal,
         });
-        if (!response.ok) throw new Error('compat-request');
+        if (!response.ok) {
+          let detail = '';
+          try {
+            const data = await response.json();
+            if (data && data.error) {
+              detail = String(data.error.message || '');
+              if (data.error.detail) detail += ` (${data.error.detail})`;
+            }
+          } catch {
+            // The error body is not JSON; keep the generic message.
+          }
+          const error = new Error('compat-request');
+          error.detail = detail;
+          throw error;
+        }
         const contentType = String(response.headers.get('content-type') || '').toLowerCase();
         const buffer = await response.arrayBuffer();
         if (generation !== compatGeneration) return;
@@ -1276,7 +1310,7 @@ window.__ModuleLoader__.load({
           throw new Error('compat-format');
         }
         if (generation !== compatGeneration) return;
-        setStore({ compatLoading: false, audioError: '' });
+        setStore({ compatLoading: false, audioError: '', compatErrorDetail: '' });
         const player = store.snapshot && store.snapshot.player;
         if (player && player.track && player.track.id === track.id) {
           if (player.positionMs > 0) {
@@ -1291,7 +1325,11 @@ window.__ModuleLoader__.load({
         }
       } catch (error) {
         if (controller.signal.aborted || generation !== compatGeneration) return;
-        setStore({ audioError: 'compat', compatLoading: false });
+        setStore({
+          audioError: 'compat',
+          compatLoading: false,
+          compatErrorDetail: error && error.detail ? String(error.detail) : '',
+        });
       } finally {
         if (compatAbort === controller) compatAbort = null;
       }
@@ -1310,7 +1348,7 @@ window.__ModuleLoader__.load({
         element.src = source;
         element.load();
         lastSeekToken = -1;
-        setStore({ audioError: '', compatLoading: false });
+        setStore({ audioError: '', compatLoading: false, compatErrorDetail: '' });
         return element;
       }
       if (audioTrackId === track.id && audioSource === 'compat') return element;
@@ -1325,7 +1363,7 @@ window.__ModuleLoader__.load({
         // The element may already be detached.
       }
       lastSeekToken = -1;
-      setStore({ audioError: '', compatLoading: true });
+      setStore({ audioError: '', compatLoading: true, compatErrorDetail: '' });
       const generation = compatGeneration;
       void loadCompatAudio(track, generation);
       return element;
@@ -2109,6 +2147,7 @@ window.__ModuleLoader__.load({
       const modeText = player.mode === 'one' ? t('repeatOne') : player.mode === 'shuffle' ? t('shuffle') : t('repeatAll');
       const audioError = useStoreValue((value) => value.audioError);
       const compatLoading = useStoreValue((value) => value.compatLoading);
+      const compatErrorDetail = useStoreValue((value) => value.compatErrorDetail);
       return h('section', { className: 'fnm-player', 'aria-label': t('currentTrack') },
         h('div', { className: 'fnm-now' },
           h(Cover, { coverId: track ? track.coverId : '', size: 52, alt: track ? track.title : '' }),
@@ -2177,7 +2216,7 @@ window.__ModuleLoader__.load({
           ) : null,
           compatLoading ? h('span', { className: 'fnm-hintline' }, t('compatLoading')) : null,
           audioError ? h('span', { className: 'fnm-hintline fnm-errorline' },
-            audioError === 'autoplay' ? t('autoplayBlocked') : audioError === 'compat' ? t('compatError') : audioError === 'stream' ? t('streamUnavailable') : t('audioError'),
+            audioError === 'autoplay' ? t('autoplayBlocked') : audioError === 'compat' ? (compatErrorDetail !== '' ? `${t('compatError')}（${compatErrorDetail}）` : t('compatError')) : audioError === 'stream' ? t('streamUnavailable') : t('audioError'),
             h('button', { type: 'button', className: 'fnm-link', onClick: props.onPlayPause }, t('audioRetry')),
           ) : null,
         ),

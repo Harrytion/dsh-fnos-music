@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { apply } from '../lib/index.js';
 import { startMockNas, mockTarget, TOKEN } from './mock-nas.mjs';
-import { resetFfmpegCache } from '../lib/media/remux.js';
+import { findFfmpeg, resetFfmpegCache } from '../lib/media/remux.js';
 
 function call(base, method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -378,6 +378,13 @@ test('Host routes and Agent tools work end-to-end against a mock fnOS NAS', asyn
 
     const missingStream = await call(dshBase, 'GET', '/fnos-music/stream?guid=missing');
     assert.equal(missingStream.status, 404, JSON.stringify(missingStream.body));
+
+    if (findFfmpeg() !== undefined) {
+      const compatStream = await call(dshBase, 'GET', '/fnos-music/compat-stream?guid=track-1');
+      assert.equal(compatStream.status, 200, JSON.stringify(compatStream.body));
+      assert.match(String(compatStream.headers['content-type']), /audio\/webm/);
+      assert.deepEqual([...compatStream.buffer.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
+    }
 
     const favorite = await call(dshBase, 'POST', '/fnos-music/favorite', { action: 'add', trackId: 'track-1' });
     assert.equal(favorite.body.ok, true, JSON.stringify(favorite.body));

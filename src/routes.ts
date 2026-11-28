@@ -538,6 +538,47 @@ export function registerRoutes(scope: DshScope, bridge: MusicBridge): void {
     sendMediaBuffer(request, response, result.data.buffer, result.data.contentType);
   });
 
+  route('GET', '/compat-stream', async (request, response) => {
+    const guid = queryOf(request).get('guid') ?? '';
+    const opened = await bridge.openCompatStream(guid);
+    if (opened.ok !== true) {
+      sendError(response, opened.error);
+      return;
+    }
+    const handle = opened.data;
+    response.statusCode = 200;
+    response.setHeader('content-type', 'audio/webm');
+    response.setHeader('cache-control', 'no-store');
+    response.flushHeaders?.();
+    let cleaned = false;
+    const close = (): void => {
+      if (cleaned) return;
+      cleaned = true;
+      if (watchdog !== null) clearInterval(watchdog);
+      handle.close();
+    };
+    // An aborted client can leave a half-open socket on some proxies; the
+    // watchdog is the final guard that kills ffmpeg and the upstream stream.
+    const watchdog = setInterval(() => {
+      const socketGone = response.socket !== null && response.socket !== undefined && response.socket.destroyed;
+      if (response.destroyed || socketGone || response.writableEnded) close();
+    }, 1000);
+    watchdog.unref?.();
+    request.once('aborted', close);
+    response.once('close', close);
+    response.once('finish', close);
+    response.once('error', close);
+    handle.stdout.once('error', () => {
+      close();
+      response.destroy();
+    });
+    handle.stdout.pipe(response);
+    void handle.done.finally(() => {
+      close();
+      if (!response.writableEnded) response.end();
+    });
+  });
+
   route('GET', '/stream', async (request, response) => {
     const query = queryOf(request);
     const guid = query.get('guid') ?? '';

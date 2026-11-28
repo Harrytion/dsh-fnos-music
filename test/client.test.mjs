@@ -136,3 +136,12 @@ test('autoplay recovery ignores aborted plays and waits for a usable source', as
   assert.match(source, /gestureResumedAt/);
   assert.match(source, /store\.compatLoading\) return/);
 });
+
+test('client streams local-ffmpeg compatibility audio instead of buffering', async () => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const source = await fs.readFile(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'client.js'), 'utf8');
+  assert.match(source, /\/compat-stream\?guid=/);
+  assert.match(source, /store\.snapshot\.compat\.backend/);
+  assert.match(source, /compatErrorDetail/);
+});
